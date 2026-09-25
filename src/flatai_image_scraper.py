@@ -220,50 +220,116 @@ async def fill(el, value: str):
 
 
 async def login(driver, username: str, password_value: str, timeout: float):
-    print("[1] Open login URL")
+    print("[1] Opening login URL")
     await driver.get(LOGIN_URL, wait_load=True, timeout=timeout)
 
     email = await wait_for_element(
         driver,
         [
+            (By.ID, "fa-auth-email"),
             (By.CSS_SELECTOR, 'input[type="email"]'),
             (By.CSS_SELECTOR, 'input[name="email"]'),
-            (By.CSS_SELECTOR, 'input[autocomplete="username"]'),
-            (By.XPATH, '//input[contains(translate(@placeholder,"EMAIL","email"),"email")]'),
         ],
         timeout,
     )
+
     pw = await wait_for_element(
         driver,
         [
+            (By.ID, "fa-auth-password"),
             (By.CSS_SELECTOR, 'input[type="password"]'),
             (By.CSS_SELECTOR, 'input[name="password"]'),
-            (By.CSS_SELECTOR, 'input[autocomplete="current-password"]'),
         ],
         timeout,
     )
 
+    print("[2] Entering login data")
+
     await fill(email, username)
+    await asyncio.sleep(0.5)
+
     await fill(pw, password_value)
+    await asyncio.sleep(1.0)
 
-    print("[2] Enter credentials")
-    try:
-        await click_text(driver, "Sign in", timeout, exact=True)
-    except TimeoutError:
-        await click_text(driver, "Sign In", timeout, exact=True)
+    # Verify the fields really contain what we expect.
+    actual_email = await email.get_attribute("value")
+    actual_password = await pw.get_attribute("value")
 
-    # Wait until login redirects away from /login/.
+    print(f"    email: {actual_email!r}")
+    print(f"    password length: {len(actual_password or '')}")
+
+    if actual_email != username:
+        raise RuntimeError("Email field contains unexpected value")
+
+    if actual_password != password_value:
+        raise RuntimeError("Password field contains unexpected value")
+
+    # Enable network logging.
+    await driver.execute_cdp_cmd("Network.enable", {})
+
+    async def on_response(event):
+        response = event.get("response", {})
+        url = response.get("url", "")
+        status = response.get("status")
+
+        if any(
+            word in url.lower()
+            for word in ("login", "auth", "session", "token")
+        ):
+            print(f"[AUTH] HTTP {status} {url}")
+
+    await driver.add_cdp_listener(
+        "Network.responseReceived",
+        on_response,
+    )
+
+    # Use the actual form's submit button.
+    submit = await wait_for_element(
+        driver,
+        [
+            (By.CSS_SELECTOR,
+             'form[data-auth-form="login"] button[type="submit"]'),
+            (By.CSS_SELECTOR,
+             '#fa-auth button[type="submit"]'),
+        ],
+        timeout,
+    )
+
+    print("[2] Clicking Sign in")
+    await submit.click()
+    print("[2] Sign in clicked")
+
+    print("[3] Waiting for login result")
+
     deadline = time.monotonic() + timeout
+
     while time.monotonic() < deadline:
         try:
-            if "/login" not in (await driver.current_url).lower():
+            url = await driver.current_url
+
+            print(f"    URL: {url}")
+
+            if "/login" not in url.lower():
                 print("[3] Login completed")
                 return
-        except Exception:
-            pass
-        await asyncio.sleep(0.5)
 
-    raise TimeoutError("Login did not leave the login page.")
+            # Check whether the login form still exists.
+            forms = await driver.find_elements(
+                By.CSS_SELECTOR,
+                'form[data-auth-form="login"]',
+            )
+
+            if not forms:
+                print("    login form disappeared")
+
+        except Exception as exc:
+            print(f"    login status check: {exc!r}")
+
+        await asyncio.sleep(1)
+
+    raise TimeoutError(
+        "Login did not complete before timeout."
+    )
 
 
 async def select_dropdown_text(driver, label: str, value: str, timeout: float):
