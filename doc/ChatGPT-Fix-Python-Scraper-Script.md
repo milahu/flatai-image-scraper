@@ -2,8 +2,8 @@
 
 **User:** Anonymous  
 **Created:** 2026/9/25 13:20:01  
-**Updated:** 2026/9/25 22:12:43  
-**Exported:** 2026/9/25 22:20:02  
+**Updated:** 2026/9/25 22:56:30  
+**Exported:** 2026/9/25 22:56:38  
 **Link:** [<https://chatgpt.com/c/6ab658e0-fa90-83ed-9d85-29c08e59b109>](https://chatgpt.com/c/6ab658e0-fa90-83ed-9d85-29c08e59b109)
 
 ## Prompt:
@@ -2446,6 +2446,1657 @@ If you run the instrumented version, the most useful thing to paste back is ever
 ```
 
 through the first few `[AUTH]` lines (if any). **Don't paste the password or cookies/tokens.** From the request URL/status we should be able to narrow this down considerably.
+
+## Prompt:
+
+9/25/2026, 10:20:32 PM
+
+ok, login is working now. the (misleading) error message "We could not complete this request. Please try again." was caused by a wrong password in config.json. with the correct password, login is working now.
+
+ok, next problem: text input is way too slow. entering long texts character by character is just too slow for my patience. so instead, the scraper should use some javascript code, or copy-paste via the clipboard to enter the full text in one go. this affects at least the entering of the login data (email, password) and the entering of the prompt string
+
+## Response:
+
+9/25/2026, 10:20:34 PM
+
+Great — then the authentication path is fine, and we can simplify things again.
+
+For speed, I recommend **JavaScript assignment + native input/change events**, rather than character-by-character typing or clipboard automation. It is instantaneous and avoids the broken `selenium-driverless` mouse path.
+
+For React/Vue-style controlled inputs, use the native `value` setter rather than just `element.value = ...`.
+
+### Replace `fill()` with this
+
+``` python
+async def fill(el, value: str):
+    await el.execute_script(
+        """
+        const el = arguments[0];
+        const value = arguments[1];
+
+        el.focus();
+
+        const proto = el instanceof HTMLTextAreaElement
+            ? HTMLTextAreaElement.prototype
+            : HTMLInputElement.prototype;
+
+        const setter = Object.getOwnPropertyDescriptor(
+            proto,
+            "value"
+        ).set;
+
+        setter.call(el, value);
+
+        el.dispatchEvent(new Event("input", {
+            bubbles: true,
+            composed: true
+        }));
+
+        el.dispatchEvent(new Event("change", {
+            bubbles: true,
+            composed: true
+        }));
+
+        el.blur();
+        """,
+        el,
+        value,
+    )
+
+    # Optional but useful: verify the browser accepted it.
+    actual = await el.get_attribute("value")
+    if actual != value:
+        raise RuntimeError(
+            f"Failed to fill element: expected {value!r}, got {actual!r}"
+        )
+```
+
+This works for both:
+
+``` python
+await fill(email, username)
+await fill(pw, password_value)
+```
+
+and:
+
+``` python
+await fill(prompt_box, args.prompt)
+```
+
+So **one function fixes all three cases**.
+
+### Why this is preferable to clipboard
+
+Clipboard automation would require:
+
+1.  putting the string into the system clipboard
+2.  focusing the element
+3.  issuing Ctrl+V
+4.  dealing with clipboard permissions/platform differences
+
+JavaScript avoids all of that.
+
+The important part is this:
+
+``` javascript
+const setter = Object.getOwnPropertyDescriptor(
+    HTMLTextAreaElement.prototype,
+    "value"
+).set;
+
+setter.call(el, value);
+```
+
+rather than simply:
+
+``` javascript
+el.value = value;
+```
+
+The former goes through the native property setter, which is much more compatible with frameworks that maintain their own input state.
+
+### One small change I'd make
+
+Don't add artificial delays anymore:
+
+``` python
+await fill(email, username)
+await fill(pw, password_value)
+```
+
+can happen immediately.
+
+Likewise:
+
+``` python
+await fill(prompt_box, args.prompt)
+```
+
+will put even a very long prompt into the textarea essentially instantaneously.
+
+Your existing `fill()` call sites don't need to change, so this should be a **drop-in replacement** for the function.
+
+## Prompt:
+
+9/25/2026, 10:29:30 PM
+
+ok, now the scraper hangs at `[9] Waiting for generated image...` also after the generated image becomes visible.  
+the scraper fails to download the generated image, it fails to generate and download the upscaled image, but the scraper seems to continue generating images, and the scraper is spamming my terminal with some base64 string so i lose all previous log messages, because the base64 string exceeds my terminal scrollback buffer...
+
+## Response:
+
+9/25/2026, 10:29:33 PM
+
+Good — this is actually two separate problems, and the base64 spam gives us a strong clue.
+
+### 1. The base64 spam is almost certainly our debugging listener
+
+In the previous debugging step I suggested adding:
+
+``` python
+async def on_console(event):
+    print("[BROWSER]", event)
+
+await driver.add_cdp_listener(
+    "Runtime.consoleAPICalled",
+    on_console,
+)
+```
+
+If you still have that code, **remove it**.
+
+The browser is apparently emitting a console event containing a large image/data payload, and we're printing the entire CDP event. That's why your terminal is being flooded with base64.
+
+Also remove the network debugging listener once login is working:
+
+``` python
+await driver.add_cdp_listener(
+    "Network.responseReceived",
+    on_response,
+)
+```
+
+and remove:
+
+``` python
+await driver.execute_cdp_cmd("Network.enable", {})
+```
+
+You don't need either anymore.
+
+If you want to keep network debugging temporarily, make sure you only print the URL/status, never the complete event.
+
+------------------------------------------------------------------------
+
+# 2. `[9] Waiting for generated image...` is the real scraper bug
+
+Your current implementation is:
+
+``` python
+xpath = '//img[contains(@src,"/ai-image/")] | //a[contains(@href,"/ai-image/")]'
+```
+
+and then:
+
+``` python
+src = await el.get_attribute("src")
+href = await el.get_attribute("href")
+```
+
+The problem is that **"an image is visible" and "the generation is finished" are not necessarily the same DOM state**.
+
+The site can also update an existing `<img>` rather than creating a new one, or the image can be represented through a URL/data source that doesn't match your simplistic XPath.
+
+And there's another important issue:
+
+``` python
+await wait_for_generated_image(...)
+```
+
+doesn't return the image element or URL. It merely returns `None`.
+
+So even when it finds the image, you subsequently have to locate the download button and rely on the browser download machinery.
+
+I'd change this part to capture the actual generated image.
+
+------------------------------------------------------------------------
+
+# First: remove the debug listeners
+
+Your `main_async()` should **not** have these anymore:
+
+``` python
+await driver.execute_cdp_cmd("Network.enable", {})
+```
+
+and your login should not install:
+
+``` python
+Network.responseReceived
+Runtime.consoleAPICalled
+```
+
+If you want to be extra safe, restart the scraper after removing them. That clears any listeners from the existing browser session.
+
+------------------------------------------------------------------------
+
+# Then replace `wait_for_generated_image()`
+
+I'd make it return the actual image element:
+
+``` python
+async def wait_for_generated_image(driver, timeout: float):
+    """
+    Wait until Flat AI has produced a real generated image.
+
+    Returns the <img> element containing the generated image.
+    """
+    deadline = time.monotonic() + timeout
+
+    xpath = (
+        '//img[contains(@src, "/ai-image/")]'
+        ' | '
+        '//a[contains(@href, "/ai-image/")]//img'
+    )
+
+    last_seen = None
+
+    while time.monotonic() < deadline:
+        try:
+            elems = await driver.find_elements(By.XPATH, xpath)
+
+            for el in elems:
+                try:
+                    src = await el.get_attribute("src")
+
+                    if not src:
+                        continue
+
+                    if "/ai-image/" not in src:
+                        continue
+
+                    # Avoid accepting a stale/incomplete element.
+                    complete = await el.execute_script(
+                        """
+                        const img = arguments[0];
+                        return img.complete &&
+                               img.naturalWidth > 0 &&
+                               img.naturalHeight > 0;
+                        """,
+                        el,
+                    )
+
+                    if not complete:
+                        continue
+
+                    if src != last_seen:
+                        print(f"    generated image: {src[:160]}...")
+                        last_seen = src
+
+                    return el
+
+                except Exception:
+                    pass
+
+        except Exception:
+            pass
+
+        await asyncio.sleep(0.5)
+
+    raise TimeoutError(
+        "Generated image did not become available before timeout."
+    )
+```
+
+Notice the important addition:
+
+``` python
+img.complete &&
+img.naturalWidth > 0 &&
+img.naturalHeight > 0
+```
+
+That means we're waiting for the browser to actually have image data loaded, rather than merely finding an `<img>` tag.
+
+------------------------------------------------------------------------
+
+# But there's a better way to handle the download
+
+If the generated image is already present as an `<img>`, we don't necessarily need to click the site's Download button at all.
+
+We can retrieve its URL and download it directly through the browser context.
+
+However, because the site may require authentication cookies, I wouldn't immediately switch to Python `requests`. The browser already has the authenticated session.
+
+Instead, let's first see what the generated image actually looks like.
+
+Temporarily change:
+
+``` python
+image = await wait_for_generated_image(driver, args.timeout)
+```
+
+and print:
+
+``` python
+src = await image.get_attribute("src")
+print(f"    image src: {src}")
+```
+
+**Don't print it if it is a `data:image/...;base64,...` URL**, because that's exactly the giant terminal output we're trying to avoid.
+
+Use:
+
+``` python
+src = await image.get_attribute("src")
+
+if src:
+    if src.startswith("data:"):
+        print("    generated image uses a data URL")
+        print(f"    data URL length: {len(src)}")
+    else:
+        print(f"    generated image URL: {src[:200]}")
+```
+
+This will tell us whether we're dealing with:
+
+``` text
+https://flatai.org/ai-image/...
+```
+
+or:
+
+``` text
+data:image/jpeg;base64,...
+```
+
+without destroying your terminal.
+
+------------------------------------------------------------------------
+
+# There is also a bug in your retry loop
+
+This explains why you say:
+
+> the scraper seems to continue generating images
+
+Your `main_async()` has:
+
+``` python
+while True:
+    try:
+        await one_generation(...)
+        iteration += 1
+    except Exception as exc:
+        print(...)
+        print("The browser remains open. Retrying after 5 seconds...")
+        await asyncio.sleep(5)
+```
+
+So if this happens:
+
+``` text
+Generate image
+     ↓
+image appears
+     ↓
+wait_for_generated_image() times out
+     ↓
+Exception
+     ↓
+catch exception
+     ↓
+5 seconds
+     ↓
+Generate again
+```
+
+the scraper **doesn't know that generation actually succeeded**.
+
+It assumes the whole generation failed and starts another one.
+
+That's why you're probably seeing repeated generations.
+
+For now I'd change the exception handling to **stop instead of retrying**, while we're debugging:
+
+``` python
+except Exception as exc:
+    print(
+        f"\nGeneration {iteration} failed: {exc!r}",
+        file=sys.stderr,
+    )
+    raise
+```
+
+Once the workflow is reliable, we can reintroduce retrying intelligently.
+
+------------------------------------------------------------------------
+
+# So I'd make these changes now
+
+### Remove all CDP debug listeners
+
+Remove:
+
+``` python
+await driver.execute_cdp_cmd("Network.enable", {})
+```
+
+and any:
+
+``` python
+await driver.add_cdp_listener(...)
+```
+
+especially:
+
+``` python
+Runtime.consoleAPICalled
+```
+
+That should immediately stop the base64 flood.
+
+### Replace image detection
+
+Use the `wait_for_generated_image()` implementation above.
+
+### Temporarily don't retry
+
+Change:
+
+``` python
+except Exception as exc:
+    print(...)
+    print("The browser remains open. Retrying after 5 seconds...")
+    await asyncio.sleep(5)
+```
+
+to:
+
+``` python
+except Exception as exc:
+    print(
+        f"\nGeneration {iteration} failed: {exc!r}",
+        file=sys.stderr,
+    )
+    raise
+```
+
+### Capture the actual image
+
+Change:
+
+``` python
+await wait_for_generated_image(driver, args.timeout)
+```
+
+to:
+
+``` python
+generated_image = await wait_for_generated_image(
+    driver,
+    args.timeout,
+)
+
+src = await generated_image.get_attribute("src")
+
+if src and src.startswith("data:"):
+    print(f"    generated image is a data URL ({len(src)} bytes of URL data)")
+else:
+    print(f"    generated image URL: {(src or '')[:200]}")
+```
+
+------------------------------------------------------------------------
+
+## One more thing I want to establish
+
+Your original comment says:
+
+> This mirrors the HTTP traffic in the supplied HAR, where generation polling eventually returns such a URL.
+
+That suggests the scraper was originally based on an observed HAR, and there may be a **much better solution than clicking Download at all**: we can identify the actual generation API request and its response, then download the resulting image directly.
+
+That would also make the scraper substantially more reliable:
+
+``` text
+Generate
+   ↓
+wait for generation API
+   ↓
+get image URL
+   ↓
+download image
+   ↓
+upscale
+   ↓
+get upscaled image URL
+   ↓
+download
+```
+
+rather than:
+
+``` text
+Generate
+   ↓
+guess DOM state
+   ↓
+find image
+   ↓
+find Download button
+   ↓
+click Download
+   ↓
+guess which filesystem file appeared
+```
+
+**For the next step, don't change anything else yet.** Remove the CDP listeners, stop the retry loop, apply the `naturalWidth/naturalHeight` check, and run one generation.
+
+The useful output will be something like:
+
+``` text
+[8] Click Generate
+[9] Waiting for generated image...
+    generated image: https://...
+```
+
+or:
+
+``` text
+    generated image is a data URL (1234567 bytes of URL data)
+```
+
+That will tell us exactly how Flat AI is exposing the generated image, and then we can fix the download/upscale path properly.
+
+## Prompt:
+
+9/25/2026, 10:46:49 PM
+
+the scraper hangs before starting the image generator, and before changing the image aspect ratio
+
+the "generate" button is ....
+
+HTML
+
+    <button type="button" id="generateButton" class="custom-button">
+                <i class="fas fa-bolt" data-fa-svg="bolt" aria-hidden="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.6 6.4L21 12l-6.4 2.6L12 21l-2.6-6.4L3 12l6.4-2.6Z"></path></svg></i>
+                <span class="button-text">Generate</span>
+              </button>
+
+selector
+
+    #generateButton
+
+XPath
+
+    //*[@id="generateButton"]
+
+full XPath
+
+    /html/body/div[2]/div[2]/main/section[7]/div[1]/section/div[1]/aside/form/div[1]/button[1]
+
+terminal output:
+
+    [3] Login completed
+    [4] Open Image Studio
+
+    === Generation 1 ===
+
+    Generation 1 failed: TimeoutError("Couldn't compute element location within 10 seconds")
+    The browser remains open. Retrying after 5 seconds...
+
+    === Generation 1 ===
+
+    Generation 1 failed: TimeoutError("Couldn't compute element location within 10 seconds")
+    The browser remains open. Retrying after 5 seconds...
+
+    === Generation 1 ===
+
+    Generation 1 failed: TimeoutError("Couldn't compute element location within 10 seconds")
+    The browser remains open. Retrying after 5 seconds...
+
+    === Generation 1 ===
+
+    Generation 1 failed: TimeoutError("Couldn't compute element location within 10 seconds")
+    The browser remains open. Retrying after 5 seconds...
+
+    === Generation 1 ===
+
+    Generation 1 failed: TimeoutError("Couldn't compute element location within 10 seconds")
+    The browser remains open. Retrying after 5 seconds...
+
+    === Generation 1 ===
+
+    Generation 1 failed: TimeoutError("Couldn't compute element location within 10 seconds")
+    The browser remains open. Retrying after 5 seconds...
+
+    === Generation 1 ===
+        aspect ratio: 9:16
+        style: Flat AI Ultra
+    [8] Click Generate
+    [9] Waiting for generated image...
+
+    Generation 1 failed: TimeoutError('Generated image did not become available before timeout.')
+    The browser remains open. Retrying after 5 seconds...
+
+    === Generation 1 ===
+        aspect ratio: 9:16
+        style: Flat AI Ultra
+    [8] Click Generate
+    [9] Waiting for generated image...
+
+with `raise` in the exception handler in the `while True` loop body, i get this terminal output:
+
+
+    [3] Login completed
+    [4] Open Image Studio
+
+    === Generation 1 ===
+
+    Generation 1 failed: TimeoutError("Couldn't compute element location within 10 seconds")
+    Traceback (most recent call last):
+      File "/home/user/src/milahu/flatai-scraper/./src/flatai_scraper.py", line 803, in <module>
+        main()
+        ~~~~^^
+      File "/home/user/src/milahu/flatai-scraper/./src/flatai_scraper.py", line 797, in main
+        asyncio.run(main_async())
+        ~~~~~~~~~~~^^^^^^^^^^^^^^
+      File "/nix/store/cx8vjphywgkz4g4ydh8bi8lia9v7fgyc-python3-3.14.7-env/lib/python3.14/asyncio/runners.py", line 205, in run
+        return runner.run(main)
+               ~~~~~~~~~~^^^^^^
+      File "/nix/store/cx8vjphywgkz4g4ydh8bi8lia9v7fgyc-python3-3.14.7-env/lib/python3.14/asyncio/runners.py", line 128, in run
+        return self._loop.run_until_complete(task)
+               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+      File "/nix/store/cx8vjphywgkz4g4ydh8bi8lia9v7fgyc-python3-3.14.7-env/lib/python3.14/asyncio/base_events.py", line 720, in run_until_complete
+        return future.result()
+               ~~~~~~~~~~~~~^^
+      File "/home/user/src/milahu/flatai-scraper/./src/flatai_scraper.py", line 771, in main_async
+        await one_generation(
+        ...<6 lines>...
+        )
+      File "/home/user/src/milahu/flatai-scraper/./src/flatai_scraper.py", line 667, in one_generation
+        await set_aspect_ratio(driver, args.aspect_ratio, args.timeout)
+      File "/home/user/src/milahu/flatai-scraper/./src/flatai_scraper.py", line 416, in set_aspect_ratio
+        await select_dropdown_text(driver, "Aspect Ratio", ratio, timeout)
+      File "/home/user/src/milahu/flatai-scraper/./src/flatai_scraper.py", line 402, in select_dropdown_text
+        await control.click(move_to=True)
+      File "/nix/store/cx8vjphywgkz4g4ydh8bi8lia9v7fgyc-python3-3.14.7-env/lib/python3.14/site-packages/selenium_driverless/types/webelement.py", line 566, in click
+        raise asyncio.TimeoutError(f"Couldn't compute element location within {visible_timeout} seconds")
+    TimeoutError: Couldn't compute element location within 10 seconds
+
+## Response:
+
+9/25/2026, 10:46:51 PM
+
+Aha — this traceback makes the situation much clearer.
+
+Your NumPy patch is working, but **there are still several places where `selenium-driverless` tries to calculate a physical mouse location**. The fact that some clicks work and some don't is incidental: the geometry calculation depends on the particular element's DOM geometry.
+
+The important line is still:
+
+``` text
+selenium_driverless/types/webelement.py:566
+    raise asyncio.TimeoutError(
+        "Couldn't compute element location within ..."
+    )
+```
+
+So we should make a deliberate architectural change:
+
+> **For this scraper, don't use `WebElement.click()` at all. Use JavaScript clicks for UI controls.**
+
+You've already got the NumPy-compatible library patch, but there's no reason to make the scraper depend on its mouse-coordinate machinery when the page's controls can be activated directly.
+
+## 1. Add this helper
+
+``` python
+async def js_click(el):
+    await el.execute_script(
+        """
+        const el = arguments[0];
+
+        el.scrollIntoView({
+            block: "center",
+            inline: "center"
+        });
+
+        el.click();
+        """,
+        el,
+    )
+```
+
+## 2. Fix `click_text()`
+
+Currently you have:
+
+``` python
+await el.click(move_to=True)
+```
+
+Change it to:
+
+``` python
+await js_click(el)
+```
+
+So the whole function becomes:
+
+``` python
+async def click_text(driver, text: str, timeout: float, exact: bool = True):
+    def lit(s):
+        if "'" not in s:
+            return f"'{s}'"
+        if '"' not in s:
+            return f'"{s}"'
+        parts = s.split("'")
+        return "concat(" + ", \"'\", ".join(f"'{x}'" for x in parts) + ")"
+
+    t = lit(text)
+
+    if exact:
+        xpath = (
+            f"//*[normalize-space(text())={t} or "
+            f"@aria-label={t} or @title={t}]"
+        )
+    else:
+        xpath = (
+            f"//*[contains(normalize-space(.),{t}) or "
+            f"contains(@aria-label,{t}) or "
+            f"contains(@title,{t})]"
+        )
+
+    el = await wait_for_element(
+        driver,
+        [(By.XPATH, xpath)],
+        timeout,
+    )
+
+    await js_click(el)
+    return el
+```
+
+## 3. Fix the dropdown click
+
+Your traceback explicitly identifies this:
+
+``` python
+await control.click(move_to=True)
+```
+
+Change it to:
+
+``` python
+await js_click(control)
+```
+
+So:
+
+``` python
+async def select_dropdown_text(driver, label: str, value: str, timeout: float):
+    selects = await driver.find_elements(By.CSS_SELECTOR, "select")
+
+    for s in selects:
+        try:
+            txt = (await s.get_attribute("aria-label")) or ""
+            name = (await s.get_attribute("name")) or ""
+
+            if label.lower() in f"{txt} {name}".lower():
+                await s.execute_script(
+                    """
+                    const s = arguments[0];
+                    const v = arguments[1];
+
+                    s.value = v;
+                    s.dispatchEvent(
+                        new Event("change", {bubbles: true})
+                    );
+                    """,
+                    s,
+                    value,
+                )
+                return
+
+        except Exception:
+            pass
+
+    candidates = [
+        (By.XPATH, f'//*[@aria-label="{label}"]'),
+        (By.XPATH, f'//*[@title="{label}"]'),
+        (By.XPATH, f'//*[normalize-space(text())="{label}"]'),
+        (By.XPATH, f'//*[contains(normalize-space(.),"{label}")]'),
+    ]
+
+    control = await wait_for_element(
+        driver,
+        candidates,
+        timeout,
+    )
+
+    await js_click(control)
+
+    await click_text(
+        driver,
+        value,
+        timeout,
+        exact=True,
+    )
+```
+
+This should fix the exact exception in your traceback.
+
+------------------------------------------------------------------------
+
+# 4. Fix Generate explicitly
+
+You gave us the actual HTML:
+
+``` html
+<button type="button" id="generateButton" class="custom-button">
+```
+
+So don't search for:
+
+``` python
+//*[normalize-space(text())="Generate"]
+```
+
+and don't let Selenium guess where the button is.
+
+Use the ID:
+
+``` python
+async def wait_for_generate_button(driver, timeout: float):
+    return await wait_for_element(
+        driver,
+        [
+            (By.ID, "generateButton"),
+            (By.CSS_SELECTOR, "#generateButton"),
+        ],
+        timeout,
+    )
+```
+
+Then in `one_generation()`:
+
+``` python
+print("[8] Click Generate")
+before_download = download_snapshot(download_dir)
+
+generate = await wait_for_generate_button(
+    driver,
+    args.timeout,
+)
+
+await js_click(generate)
+```
+
+**Do not do:**
+
+``` python
+await generate.click(move_to=True)
+```
+
+------------------------------------------------------------------------
+
+# 5. Do the same thing for the download button
+
+Your current:
+
+``` python
+await el.click(move_to=True)
+```
+
+should also become:
+
+``` python
+await js_click(el)
+```
+
+So:
+
+``` python
+async def click_download(driver, timeout: float):
+    selectors = [
+        (By.XPATH, '//*[@title="Download Image"]'),
+        (By.XPATH, '//*[@aria-label="Download Image"]'),
+        (By.XPATH, '//*[normalize-space(text())="Download"]'),
+        (By.CSS_SELECTOR, 'button[title*="Download"]'),
+        (By.CSS_SELECTOR, 'a[download]'),
+    ]
+
+    el = await wait_for_element(
+        driver,
+        selectors,
+        timeout,
+    )
+
+    await js_click(el)
+```
+
+------------------------------------------------------------------------
+
+# 6. And the Upscale controls
+
+You currently have:
+
+``` python
+await click_text(driver, "Tools", timeout, exact=True)
+```
+
+and:
+
+``` python
+await click_text(driver, "Upscale", timeout, exact=True)
+```
+
+Those are already fixed if you change `click_text()` as above.
+
+So:
+
+``` python
+async def upscale_current_image(driver, timeout: float):
+    print("[13] Open Tools menu")
+
+    try:
+        await click_text(
+            driver,
+            "Tools",
+            timeout,
+            exact=True,
+        )
+    except TimeoutError:
+        await click_text(
+            driver,
+            "Tools",
+            timeout,
+            exact=False,
+        )
+
+    print("[14] Click Upscale")
+
+    await click_text(
+        driver,
+        "Upscale",
+        timeout,
+        exact=True,
+    )
+```
+
+doesn't need further changes.
+
+------------------------------------------------------------------------
+
+# 7. There's a subtle problem with your aspect-ratio code
+
+This part:
+
+``` python
+try:
+    await click_text(driver, ratio, timeout, exact=True)
+    print(f"    aspect ratio: {ratio}")
+    return
+except TimeoutError:
+    pass
+```
+
+means the scraper might spend **the entire timeout** looking for `"9:16"` as text before it finally tries the dropdown.
+
+That's why your output can look like:
+
+``` text
+=== Generation 1 ===
+
+Generation 1 failed: TimeoutError("Couldn't compute element location within 10 seconds")
+```
+
+It may not even be the ratio itself that's absent. It can be the fallback control's physical click.
+
+After changing `click_text()` and `select_dropdown_text()`, this should improve substantially.
+
+------------------------------------------------------------------------
+
+# 8. Your current successful run tells us something useful
+
+This output:
+
+``` text
+=== Generation 1 ===
+    aspect ratio: 9:16
+    style: Flat AI Ultra
+[8] Click Generate
+[9] Waiting for generated image...
+```
+
+means:
+
+**all of this worked:**
+
+``` text
+login
+↓
+open generator
+↓
+find prompt
+↓
+fill prompt
+↓
+set aspect ratio
+↓
+set style
+↓
+find Generate
+↓
+click Generate
+```
+
+So we shouldn't redesign any of that yet.
+
+The remaining problem is specifically:
+
+``` text
+[9] Waiting for generated image...
+```
+
+And I suspect our previous `wait_for_generated_image()` implementation is simply looking for the wrong thing.
+
+------------------------------------------------------------------------
+
+# 9. Before changing image detection, inspect the generated DOM
+
+Once the above click fixes are in place, let it reach:
+
+``` text
+[9] Waiting for generated image...
+```
+
+Then we need to identify **what Flat AI actually puts into the DOM** after generation.
+
+Your original assumption was:
+
+``` python
+//img[contains(@src,"/ai-image/")]
+```
+
+But that may be wrong.
+
+For example, it might be:
+
+``` html
+<img src="https://...">
+```
+
+with a completely different URL.
+
+Or:
+
+``` html
+<img src="data:image/jpeg;base64,...">
+```
+
+Or the actual image could be inside:
+
+``` html
+<a href="...">
+```
+
+Or a CSS background.
+
+Or the UI might show a preview while the actual downloadable image is stored somewhere else.
+
+### Don't dump the DOM into the terminal
+
+Because you've already discovered the base64 problem.
+
+Instead, once generation appears, run a compact DOM diagnostic:
+
+``` python
+async def inspect_generated_images(driver):
+    result = await driver.execute_script(
+        """
+        return [...document.images].map((img, i) => ({
+            index: i,
+            src: img.src ? (
+                img.src.startsWith("data:")
+                    ? "DATA_URL length=" + img.src.length
+                    : img.src.substring(0, 300)
+            ) : "",
+            width: img.naturalWidth,
+            height: img.naturalHeight,
+            complete: img.complete,
+            alt: img.alt || ""
+        }));
+        """
+    )
+
+    for item in result:
+        print(
+            f"    IMG {item['index']}: "
+            f"{item['width']}x{item['height']} "
+            f"complete={item['complete']} "
+            f"src={item['src']!r} "
+            f"alt={item['alt']!r}"
+        )
+```
+
+Then temporarily call:
+
+``` python
+await inspect_generated_images(driver)
+```
+
+after the image becomes visibly available.
+
+This will produce something sane like:
+
+``` text
+IMG 0: 100x100 complete=True src='https://...' alt=''
+IMG 1: 1024x1536 complete=True src='https://...' alt='Generated image'
+```
+
+without ever printing megabytes of base64.
+
+------------------------------------------------------------------------
+
+## One more important change: stop the automatic retry while debugging
+
+Your retry loop is hiding the actual state of the scraper.
+
+Use:
+
+``` python
+except Exception as exc:
+    print(
+        f"\nGeneration {iteration} failed: {exc!r}",
+        file=sys.stderr,
+    )
+    raise
+```
+
+until the workflow works.
+
+Otherwise:
+
+``` text
+generation succeeds
+       ↓
+scraper doesn't recognize image
+       ↓
+exception
+       ↓
+5 seconds
+       ↓
+GENERATE AGAIN
+       ↓
+repeat forever
+```
+
+which is exactly the behavior you observed.
+
+------------------------------------------------------------------------
+
+### So the immediate patch is
+
+**Replace every remaining physical UI click:**
+
+``` python
+.click(move_to=True)
+```
+
+with:
+
+``` python
+js_click(element)
+```
+
+particularly these four locations:
+
+``` text
+click_text()
+select_dropdown_text()
+generate.click()
+click_download()
+```
+
+and use the actual:
+
+``` css
+#generateButton
+```
+
+selector.
+
+Then run **one generation only**. Once it reaches `[9]`, inspect the images with the compact diagnostic above. That will let us fix the download path based on what the site actually produces rather than guessing from the old HAR assumptions.
+
+## Prompt:
+
+9/25/2026, 10:55:22 PM
+
+ok, now the "generate" button is clicked correctly, but now the scraper still hangs at `[9] Waiting for generated image...`  
+how can i help to debug this? how can we find the DOM change we have to wait for?
+
+## Response:
+
+9/25/2026, 10:55:23 PM
+
+Yes. At this point the best approach is to **observe the page before/after clicking Generate and identify exactly what changes**. We don't need to guess an XPath.
+
+The most useful debugging method is:
+
+1.  take a compact snapshot of relevant DOM state before Generate
+2.  click Generate
+3.  poll for changes
+4.  report only structural/URL/text changes — **never dump `outerHTML` or base64**
+5.  once we know the change, turn it into a reliable wait condition.
+
+### 1. Add a DOM diagnostic
+
+Add this function:
+
+``` python
+async def debug_generator_state(driver, label: str):
+    state = await driver.execute_script(
+        """
+        const interesting = [];
+
+        // Images
+        for (const [i, img] of [...document.images].entries()) {
+            const src = img.currentSrc || img.src || "";
+
+            interesting.push({
+                type: "img",
+                index: i,
+                src: src.startsWith("data:")
+                    ? `data:... (${src.length} chars)`
+                    : src.substring(0, 300),
+                width: img.naturalWidth,
+                height: img.naturalHeight,
+                complete: img.complete,
+                alt: img.alt || "",
+                visible: !!(
+                    img.offsetWidth ||
+                    img.offsetHeight ||
+                    img.getClientRects().length
+                ),
+            });
+        }
+
+        // Links containing potentially interesting image URLs
+        for (const [i, a] of [...document.querySelectorAll("a")].entries()) {
+            const href = a.href || "";
+
+            if (
+                href.includes("/ai-image/") ||
+                href.includes("/image/") ||
+                href.match(/\\.(jpg|jpeg|png|webp)(\\?|$)/i)
+            ) {
+                interesting.push({
+                    type: "link",
+                    index: i,
+                    href: href.substring(0, 300),
+                    text: (a.innerText || "").trim().substring(0, 100),
+                });
+            }
+        }
+
+        // Buttons
+        for (const [i, button] of [...document.querySelectorAll("button")].entries()) {
+            const text = (button.innerText || "").trim();
+
+            if (
+                text ||
+                button.id ||
+                button.getAttribute("aria-label")
+            ) {
+                interesting.push({
+                    type: "button",
+                    index: i,
+                    id: button.id || "",
+                    text: text.substring(0, 100),
+                    aria: button.getAttribute("aria-label") || "",
+                    disabled: !!button.disabled,
+                });
+            }
+        }
+
+        return {
+            url: location.href,
+            title: document.title,
+            bodyText: (document.body.innerText || "").substring(0, 3000),
+            interesting,
+        };
+        """
+    )
+
+    print(f"\n--- generator state: {label} ---")
+    print(f"URL: {state['url']}")
+    print(f"TITLE: {state['title']}")
+
+    print("TEXT:")
+    print(state["bodyText"])
+
+    print("ELEMENTS:")
+
+    for item in state["interesting"]:
+        if item["type"] == "img":
+            print(
+                f"  IMG[{item['index']}]: "
+                f"{item['width']}x{item['height']} "
+                f"complete={item['complete']} "
+                f"visible={item['visible']} "
+                f"src={item['src']!r} "
+                f"alt={item['alt']!r}"
+            )
+
+        elif item["type"] == "link":
+            print(
+                f"  LINK[{item['index']}]: "
+                f"href={item['href']!r} "
+                f"text={item['text']!r}"
+            )
+
+        elif item["type"] == "button":
+            print(
+                f"  BUTTON[{item['index']}]: "
+                f"id={item['id']!r} "
+                f"text={item['text']!r} "
+                f"aria={item['aria']!r} "
+                f"disabled={item['disabled']}"
+            )
+```
+
+This deliberately truncates URLs and page text so we don't get another base64 explosion.
+
+------------------------------------------------------------------------
+
+## 2. Capture the state immediately before Generate
+
+In `one_generation()`, change this:
+
+``` python
+print("[8] Click Generate")
+before_download = download_snapshot(download_dir)
+
+generate = await wait_for_generate_button(
+    driver,
+    args.timeout,
+)
+
+await js_click(generate)
+```
+
+to:
+
+``` python
+print("[8] Click Generate")
+
+await debug_generator_state(
+    driver,
+    "BEFORE GENERATE",
+)
+
+before_download = download_snapshot(download_dir)
+
+generate = await wait_for_generate_button(
+    driver,
+    args.timeout,
+)
+
+await js_click(generate)
+
+print("[8] Generate clicked")
+```
+
+------------------------------------------------------------------------
+
+## 3. Now watch the page for changes
+
+Add this temporary diagnostic:
+
+``` python
+async def debug_watch_generator(driver, seconds: float = 30.0):
+    print(f"\nWatching generator DOM for {seconds:.0f} seconds...")
+
+    previous = None
+    deadline = time.monotonic() + seconds
+
+    while time.monotonic() < deadline:
+        state = await driver.execute_script(
+            """
+            return {
+                url: location.href,
+
+                images: [...document.images].map(img => ({
+                    src: (
+                        img.currentSrc ||
+                        img.src ||
+                        ""
+                    ).startsWith("data:")
+                        ? `data:...(${(img.currentSrc || img.src || "").length})`
+                        : (img.currentSrc || img.src || "").substring(0, 200),
+
+                    width: img.naturalWidth,
+                    height: img.naturalHeight,
+                    complete: img.complete,
+                    visible: !!(
+                        img.offsetWidth ||
+                        img.offsetHeight ||
+                        img.getClientRects().length
+                    )
+                })),
+
+                text: (document.body.innerText || "")
+                    .substring(0, 5000),
+
+                buttons: [...document.querySelectorAll("button")]
+                    .map(b => ({
+                        id: b.id || "",
+                        text: (b.innerText || "").trim().substring(0, 100),
+                        disabled: !!b.disabled,
+                        aria: b.getAttribute("aria-label") || ""
+                    }))
+            };
+            """
+        )
+
+        # Serialize safely for comparison.
+        current = json.dumps(
+            state,
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+
+        if current != previous:
+            print("\n--- DOM CHANGE ---")
+            print(f"URL: {state['url']}")
+
+            print("IMAGES:")
+            for img in state["images"]:
+                print(
+                    f"  {img['width']}x{img['height']} "
+                    f"complete={img['complete']} "
+                    f"visible={img['visible']} "
+                    f"src={img['src']!r}"
+                )
+
+            print("BUTTONS:")
+            for button in state["buttons"]:
+                print(
+                    f"  id={button['id']!r} "
+                    f"text={button['text']!r} "
+                    f"disabled={button['disabled']} "
+                    f"aria={button['aria']!r}"
+                )
+
+            print("PAGE TEXT:")
+            print(state["text"])
+
+            previous = current
+
+        await asyncio.sleep(0.5)
+
+    print("\nFinished DOM watch.")
+```
+
+Then temporarily do:
+
+``` python
+await js_click(generate)
+
+print("[8] Generate clicked")
+
+await debug_watch_generator(
+    driver,
+    seconds=60,
+)
+
+raise RuntimeError(
+    "Stopped after generator debugging"
+)
+```
+
+**Don't call `wait_for_generated_image()` yet.**
+
+------------------------------------------------------------------------
+
+# What I want to see
+
+Run one generation and paste the terminal output beginning with:
+
+``` text
+--- generator state: BEFORE GENERATE ---
+```
+
+and then all of the:
+
+``` text
+--- DOM CHANGE ---
+```
+
+sections.
+
+You don't need to paste the whole output if it's huge. In particular, I'm interested in lines like:
+
+``` text
+URL: ...
+IMAGES:
+  IMG[...]: ...
+BUTTONS:
+  id='...' text='...' ...
+PAGE TEXT:
+...
+```
+
+That should reveal whether Flat AI does something like:
+
+### Case A — image gets added
+
+``` text
+IMG[12]: 1024x1536 ... src='https://...'
+```
+
+Then our wait condition can simply wait for that image.
+
+### Case B — existing image changes
+
+``` text
+IMG[4]: 0x0 -> 1024x1536
+src='...'
+```
+
+Then we wait for `naturalWidth > 0`.
+
+### Case C — a result container appears
+
+For example:
+
+``` text
+BUTTON ... Download ...
+BUTTON ... Upscale ...
+```
+
+Then we wait for the Download/Upscale controls.
+
+### Case D — page text changes
+
+Something like:
+
+``` text
+Generating...
+```
+
+becoming:
+
+``` text
+Generation complete
+```
+
+Then that's an even cleaner wait condition.
+
+### Case E — nothing in the DOM changes
+
+This is particularly interesting. If the image visibly appears in Chromium but **our DOM snapshot never sees it**, the result may be inside an iframe, shadow DOM, or some other mechanism. Then we'll investigate that specifically.
+
+------------------------------------------------------------------------
+
+# We can also inspect iframes
+
+If the first diagnostic doesn't show the generated image, add this to the state:
+
+``` python
+frames = await driver.execute_script(
+    """
+    return [...document.querySelectorAll("iframe")].map((f, i) => ({
+        index: i,
+        src: f.src || "",
+        title: f.title || "",
+        name: f.name || "",
+        id: f.id || ""
+    }));
+    """
+)
+
+print("IFRAMES:")
+for frame in frames:
+    print(f"  {frame}")
+```
+
+But **don't add this yet**. Let's first see what the ordinary DOM does.
+
+------------------------------------------------------------------------
+
+## And one important correction to our previous approach
+
+I would **not** make the final scraper depend on:
+
+``` python
+//img[contains(@src, "/ai-image/")]
+```
+
+until we've actually observed that this is what the current Flat AI frontend produces.
+
+Your original script apparently inherited that assumption from the HAR, but the frontend can have changed since the HAR was captured.
+
+The clean workflow now is:
+
+``` text
+click Generate
+       ↓
+observe actual DOM/network behavior
+       ↓
+identify stable completion signal
+       ↓
+write wait_for_generation() around that signal
+       ↓
+identify actual image/download URL
+       ↓
+implement download
+       ↓
+then investigate Upscale
+```
+
+That will be much more robust than adding increasingly broad XPath selectors.
 
 ------------------------------------------------------------------------
 

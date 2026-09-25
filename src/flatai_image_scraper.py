@@ -207,16 +207,68 @@ async def click_text(driver, text: str, timeout: float, exact: bool = True):
             f"contains(@aria-label,{t}) or contains(@title,{t})]"
         )
     el = await wait_for_element(driver, [(By.XPATH, xpath)], timeout)
-    await el.click(move_to=True)
+    # await el.click(move_to=True)
+    await js_click(el)
     return el
 
 
+async def js_click(el):
+    await el.execute_script(
+        """
+        const el = arguments[0];
+
+        el.scrollIntoView({
+            block: "center",
+            inline: "center"
+        });
+
+        el.click();
+        """,
+        el,
+    )
+
+
 async def fill(el, value: str):
-    try:
-        await el.clear()
-    except Exception:
-        pass
-    await el.send_keys(value)
+    await el.execute_script(
+        """
+        const el = arguments[0];
+        const value = arguments[1];
+
+        el.focus();
+
+        const proto = el instanceof HTMLTextAreaElement
+            ? HTMLTextAreaElement.prototype
+            : HTMLInputElement.prototype;
+
+        const setter = Object.getOwnPropertyDescriptor(
+            proto,
+            "value"
+        ).set;
+
+        setter.call(el, value);
+
+        el.dispatchEvent(new Event("input", {
+            bubbles: true,
+            composed: true
+        }));
+
+        el.dispatchEvent(new Event("change", {
+            bubbles: true,
+            composed: true
+        }));
+
+        el.blur();
+        """,
+        el,
+        value,
+    )
+
+    # Optional but useful: verify the browser accepted it.
+    actual = await el.get_attribute("value")
+    if actual != value:
+        raise RuntimeError(
+            f"Failed to fill element: expected {value!r}, got {actual!r}"
+        )
 
 
 async def login(driver, username: str, password_value: str, timeout: float):
@@ -264,6 +316,7 @@ async def login(driver, username: str, password_value: str, timeout: float):
     if actual_password != password_value:
         raise RuntimeError("Password field contains unexpected value")
 
+    r'''
     # Enable network logging.
     await driver.execute_cdp_cmd("Network.enable", {})
 
@@ -282,6 +335,7 @@ async def login(driver, username: str, password_value: str, timeout: float):
         "Network.responseReceived",
         on_response,
     )
+    '''
 
     # Use the actual form's submit button.
     submit = await wait_for_element(
@@ -362,7 +416,8 @@ async def select_dropdown_text(driver, label: str, value: str, timeout: float):
         (By.XPATH, f'//*[contains(normalize-space(.),"{label}")]'),
     ]
     control = await wait_for_element(driver, candidates, timeout)
-    await control.click(move_to=True)
+    # await control.click(move_to=True)
+    await js_click(control)
     await click_text(driver, value, timeout, exact=True)
 
 
@@ -507,36 +562,73 @@ def add_exif(path: Path, params: dict):
 
 async def wait_for_generated_image(driver, timeout: float):
     """
-    Wait until an image link matching /ai-image/<token>/ exists. This mirrors
-    the HTTP traffic in the supplied HAR, where generation polling eventually
-    returns such a URL.
+    Wait until Flat AI has produced a real generated image.
+
+    Returns the <img> element containing the generated image.
     """
     deadline = time.monotonic() + timeout
-    xpath = '//img[contains(@src,"/ai-image/")] | //a[contains(@href,"/ai-image/")]'
+
+    xpath = (
+        '//img[contains(@src, "/ai-image/")]'
+        ' | '
+        '//a[contains(@href, "/ai-image/")]//img'
+    )
+
+    last_seen = None
+
     while time.monotonic() < deadline:
         try:
             elems = await driver.find_elements(By.XPATH, xpath)
+
             for el in elems:
                 try:
                     src = await el.get_attribute("src")
-                    href = await el.get_attribute("href")
-                    if (src and "/ai-image/" in src) or (href and "/ai-image/" in href):
-                        return
+
+                    if not src:
+                        continue
+
+                    if "/ai-image/" not in src:
+                        continue
+
+                    # Avoid accepting a stale/incomplete element.
+                    complete = await el.execute_script(
+                        """
+                        const img = arguments[0];
+                        return img.complete &&
+                               img.naturalWidth > 0 &&
+                               img.naturalHeight > 0;
+                        """,
+                        el,
+                    )
+
+                    if not complete:
+                        continue
+
+                    if src != last_seen:
+                        print(f"    generated image: {src[:160]}...")
+                        last_seen = src
+
+                    return el
+
                 except Exception:
                     pass
+
         except Exception:
             pass
+
         await asyncio.sleep(0.5)
-    raise TimeoutError("Generated image did not appear before timeout.")
+
+    raise TimeoutError(
+        "Generated image did not become available before timeout."
+    )
 
 
 async def wait_for_generate_button(driver, timeout: float):
     return await wait_for_element(
         driver,
         [
-            (By.XPATH, '//*[normalize-space(text())="Generate"]'),
-            (By.CSS_SELECTOR, 'button[type="submit"]'),
-            (By.CSS_SELECTOR, 'button'),
+            (By.ID, "generateButton"),
+            (By.CSS_SELECTOR, "#generateButton"),
         ],
         timeout,
     )
@@ -552,7 +644,8 @@ async def click_download(driver, timeout: float):
         (By.XPATH, '//a[contains(@download,"flatai")]'),
     ]
     el = await wait_for_element(driver, selectors, timeout)
-    await el.click(move_to=True)
+    # await el.click(move_to=True)
+    await js_click(el)
 
 
 async def upscale_current_image(driver, timeout: float):
@@ -596,11 +689,20 @@ async def one_generation(
     print("[8] Click Generate")
     before_download = download_snapshot(download_dir)
     generate = await wait_for_generate_button(driver, args.timeout)
-    await generate.click(move_to=True)
+    # await generate.click(move_to=True)
+    await js_click(generate)
 
     # 9. Wait.
     print("[9] Waiting for generated image...")
-    await wait_for_generated_image(driver, args.timeout)
+    # await wait_for_generated_image(driver, args.timeout)
+    image = await wait_for_generated_image(driver, args.timeout)
+    src = await image.get_attribute("src")
+    if src:
+        if src.startswith("data:"):
+            print("    generated image uses a data URL")
+            print(f"    data URL length: {len(src)}")
+        else:
+            print(f"    generated image URL: {src[:200]}")
 
     # 10–11. Download non-upscaled image.
     print("[10] Click Download")
@@ -704,8 +806,9 @@ async def main_async():
                 break
             except Exception as exc:
                 print(f"\nGeneration {iteration} failed: {exc!r}", file=sys.stderr)
-                print("The browser remains open. Retrying after 5 seconds...", file=sys.stderr)
-                await asyncio.sleep(5)
+                # print("The browser remains open. Retrying after 5 seconds...", file=sys.stderr)
+                # await asyncio.sleep(5)
+                raise # debug
 
 
 def main():
