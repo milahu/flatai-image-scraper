@@ -1,0 +1,3 @@
+selenium-driverless
+Pillow
+piexif
