@@ -2,8 +2,8 @@
 
 **User:** Anonymous  
 **Created:** 2026/9/25 13:20:01  
-**Updated:** 2026/9/25 22:56:30  
-**Exported:** 2026/9/25 22:56:38  
+**Updated:** 2026/9/25 23:36:57  
+**Exported:** 2026/9/25 23:39:18  
 **Link:** [<https://chatgpt.com/c/6ab658e0-fa90-83ed-9d85-29c08e59b109>](https://chatgpt.com/c/6ab658e0-fa90-83ed-9d85-29c08e59b109)
 
 ## Prompt:
@@ -4097,6 +4097,1064 @@ then investigate Upscale
 ```
 
 That will be much more robust than adding increasingly broad XPath selectors.
+
+## Prompt:
+
+9/25/2026, 11:02:12 PM
+
+your debug helper throws
+
+    ELEMENTS:
+
+    Generation 1 failed: TypeError("'JSUnserializable' object is not subscriptable")
+    Traceback (most recent call last):
+      File "/home/user/src/milahu/flatai-scraper/./src/flatai_scraper.py", line 1027, in <module>
+        main()
+        ~~~~^^
+      File "/home/user/src/milahu/flatai-scraper/./src/flatai_scraper.py", line 1021, in main
+        asyncio.run(main_async())
+        ~~~~~~~~~~~^^^^^^^^^^^^^^
+      File "/nix/store/cx8vjphywgkz4g4ydh8bi8lia9v7fgyc-python3-3.14.7-env/lib/python3.14/asyncio/runners.py", line 205, in run
+        return runner.run(main)
+               ~~~~~~~~~~^^^^^^
+      File "/nix/store/cx8vjphywgkz4g4ydh8bi8lia9v7fgyc-python3-3.14.7-env/lib/python3.14/asyncio/runners.py", line 128, in run
+        return self._loop.run_until_complete(task)
+               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+      File "/nix/store/cx8vjphywgkz4g4ydh8bi8lia9v7fgyc-python3-3.14.7-env/lib/python3.14/asyncio/base_events.py", line 720, in run_until_complete
+        return future.result()
+               ~~~~~~~~~~~~~^^
+      File "/home/user/src/milahu/flatai-scraper/./src/flatai_scraper.py", line 995, in main_async
+        await one_generation(
+        ...<6 lines>...
+        )
+      File "/home/user/src/milahu/flatai-scraper/./src/flatai_scraper.py", line 690, in one_generation
+        await debug_generator_state(driver, "BEFORE GENERATE")
+      File "/home/user/src/milahu/flatai-scraper/./src/flatai_scraper.py", line 842, in debug_generator_state
+        if item["type"] == "img":
+           ~~~~^^^^^^^^
+    TypeError: 'JSUnserializable' object is not subscriptable
+
+## Response:
+
+9/25/2026, 11:02:13 PM
+
+Yes — that's a `selenium-driverless` serialization quirk, not a problem with the page.
+
+`execute_script()` is returning `JSUnserializable` objects for some of the JavaScript result instead of ordinary Python `dict`s. So the diagnostic helper I gave you was too optimistic about the return-value conversion.
+
+Let's make the debugging code **much simpler and serialization-safe**. Rather than returning nested JavaScript objects, have JavaScript produce one plain JSON string, then explicitly `json.loads()` it in Python.
+
+### Replace `debug_generator_state()` with this
+
+``` python
+async def debug_generator_state(driver, label: str):
+    raw = await driver.execute_script(
+        """
+        const result = {
+            url: location.href,
+            title: document.title,
+            bodyText: (document.body.innerText || "").substring(0, 3000),
+            images: [],
+            links: [],
+            buttons: []
+        };
+
+        for (const img of document.images) {
+            const src = img.currentSrc || img.src || "";
+
+            result.images.push({
+                src: src.startsWith("data:")
+                    ? "data:... (" + src.length + " chars)"
+                    : src.substring(0, 300),
+                width: img.naturalWidth,
+                height: img.naturalHeight,
+                complete: img.complete,
+                alt: img.alt || "",
+                visible: !!(
+                    img.offsetWidth ||
+                    img.offsetHeight ||
+                    img.getClientRects().length
+                )
+            });
+        }
+
+        for (const a of document.querySelectorAll("a")) {
+            const href = a.href || "";
+
+            if (
+                href.includes("/ai-image/") ||
+                href.includes("/image/") ||
+                /\\.(jpg|jpeg|png|webp)(\\?|$)/i.test(href)
+            ) {
+                result.links.push({
+                    href: href.substring(0, 300),
+                    text: (a.innerText || "").trim().substring(0, 100)
+                });
+            }
+        }
+
+        for (const button of document.querySelectorAll("button")) {
+            const text = (button.innerText || "").trim();
+
+            if (
+                text ||
+                button.id ||
+                button.getAttribute("aria-label")
+            ) {
+                result.buttons.push({
+                    id: button.id || "",
+                    text: text.substring(0, 100),
+                    aria: button.getAttribute("aria-label") || "",
+                    disabled: !!button.disabled
+                });
+            }
+        }
+
+        return JSON.stringify(result);
+        """
+    )
+
+    state = json.loads(raw)
+
+    print(f"\n--- generator state: {label} ---")
+    print(f"URL: {state['url']}")
+    print(f"TITLE: {state['title']}")
+
+    print("TEXT:")
+    print(state["bodyText"])
+
+    print("IMAGES:")
+    for i, img in enumerate(state["images"]):
+        print(
+            f"  IMG[{i}]: "
+            f"{img['width']}x{img['height']} "
+            f"complete={img['complete']} "
+            f"visible={img['visible']} "
+            f"src={img['src']!r} "
+            f"alt={img['alt']!r}"
+        )
+
+    print("LINKS:")
+    for i, link in enumerate(state["links"]):
+        print(
+            f"  LINK[{i}]: "
+            f"href={link['href']!r} "
+            f"text={link['text']!r}"
+        )
+
+    print("BUTTONS:")
+    for i, button in enumerate(state["buttons"]):
+        print(
+            f"  BUTTON[{i}]: "
+            f"id={button['id']!r} "
+            f"text={button['text']!r} "
+            f"aria={button['aria']!r} "
+            f"disabled={button['disabled']}"
+        )
+```
+
+The important difference is:
+
+``` javascript
+return JSON.stringify(result);
+```
+
+followed by:
+
+``` python
+state = json.loads(raw)
+```
+
+That prevents `selenium-driverless` from trying to deserialize the nested JavaScript objects itself.
+
+------------------------------------------------------------------------
+
+## I'd also simplify the live watcher
+
+The previous watcher has the same potential serialization problem. Replace it with this version:
+
+``` python
+async def debug_watch_generator(driver, seconds: float = 60.0):
+    print(f"\nWatching generator DOM for {seconds:.0f} seconds...")
+
+    previous = None
+    deadline = time.monotonic() + seconds
+
+    while time.monotonic() < deadline:
+        raw = await driver.execute_script(
+            """
+            const result = {
+                url: location.href,
+                images: [],
+                buttons: [],
+                text: (document.body.innerText || "").substring(0, 5000)
+            };
+
+            for (const img of document.images) {
+                const src = img.currentSrc || img.src || "";
+
+                result.images.push({
+                    src: src.startsWith("data:")
+                        ? "data:... (" + src.length + " chars)"
+                        : src.substring(0, 200),
+                    width: img.naturalWidth,
+                    height: img.naturalHeight,
+                    complete: img.complete,
+                    visible: !!(
+                        img.offsetWidth ||
+                        img.offsetHeight ||
+                        img.getClientRects().length
+                    )
+                });
+            }
+
+            for (const button of document.querySelectorAll("button")) {
+                result.buttons.push({
+                    id: button.id || "",
+                    text: (button.innerText || "").trim().substring(0, 100),
+                    disabled: !!button.disabled,
+                    aria: button.getAttribute("aria-label") || ""
+                });
+            }
+
+            return JSON.stringify(result);
+            """
+        )
+
+        state = json.loads(raw)
+
+        current = json.dumps(
+            state,
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+
+        if current != previous:
+            print("\n--- DOM CHANGE ---")
+            print(f"URL: {state['url']}")
+
+            print("IMAGES:")
+            for i, img in enumerate(state["images"]):
+                print(
+                    f"  IMG[{i}]: "
+                    f"{img['width']}x{img['height']} "
+                    f"complete={img['complete']} "
+                    f"visible={img['visible']} "
+                    f"src={img['src']!r}"
+                )
+
+            print("BUTTONS:")
+            for i, button in enumerate(state["buttons"]):
+                print(
+                    f"  BUTTON[{i}]: "
+                    f"id={button['id']!r} "
+                    f"text={button['text']!r} "
+                    f"disabled={button['disabled']} "
+                    f"aria={button['aria']!r}"
+                )
+
+            print("PAGE TEXT:")
+            print(state["text"])
+
+            previous = current
+
+        await asyncio.sleep(0.5)
+
+    print("\nFinished DOM watch.")
+```
+
+### Then run exactly one generation
+
+Keep:
+
+``` python
+await debug_generator_state(
+    driver,
+    "BEFORE GENERATE",
+)
+
+await js_click(generate)
+
+print("[8] Generate clicked")
+
+await debug_watch_generator(
+    driver,
+    seconds=60,
+)
+
+raise RuntimeError("Stopped after generator debugging")
+```
+
+And keep the `raise` in your outer exception handler so it doesn't start another generation.
+
+------------------------------------------------------------------------
+
+### What we're looking for
+
+The key output is the transition after:
+
+``` text
+[8] Generate clicked
+```
+
+For example, if we see:
+
+``` text
+--- DOM CHANGE ---
+IMAGES:
+  IMG[12]: 0x0 complete=False ...
+```
+
+and later:
+
+``` text
+--- DOM CHANGE ---
+IMAGES:
+  IMG[12]: 1024x1536 complete=True ...
+```
+
+then we have our wait condition.
+
+Or perhaps we'll see:
+
+``` text
+BUTTON ... id='downloadButton' ...
+```
+
+appear.
+
+Or page text changes from:
+
+``` text
+Generating...
+```
+
+to:
+
+``` text
+Done
+```
+
+Or, importantly, **nothing relevant changes in the normal DOM**. That would tell us to investigate network requests, MutationObserver, shadow DOM, etc.
+
+Paste the output from **`BEFORE GENERATE` plus the first few `DOM CHANGE` sections after clicking Generate**. The truncated image URLs are fine; don't paste any complete `data:` URLs or credentials.
+
+## Prompt:
+
+9/25/2026, 11:16:49 PM
+
+the data and blob URLs look promising:
+
+    --- DOM CHANGE ---
+    URL: https://flatai.org/ai-image-generator-free-no-signup/
+    IMAGES:
+
+    --- DOM CHANGE ---
+    URL: https://flatai.org/ai-image-generator-free-no-signup/
+    IMAGES:
+      IMG[50]: 1152x2048 complete=True visible=True src='blob:https://flatai.org/4f6b88e4-58bd-4869-aac9-a77efd7d4827'
+      IMG[51]: 0x0 complete=False visible=True src='data:... (454847 chars)'
+
+    --- DOM CHANGE ---
+    URL: https://flatai.org/ai-image-generator-free-no-signup/
+    IMAGES:
+      IMG[50]: 1152x2048 complete=True visible=True src='blob:https://flatai.org/4f6b88e4-58bd-4869-aac9-a77efd7d4827'
+      IMG[51]: 1152x2048 complete=True visible=True src='data:... (454847 chars)'
+
+## Response:
+
+9/25/2026, 11:16:50 PM
+
+Excellent. We now know exactly what the frontend is doing.
+
+The important transition is:
+
+``` text
+IMG[50] blob:https://flatai.org/... 1152x2048 complete=True
+IMG[51] data:... 0x0 complete=False
+```
+
+followed by:
+
+``` text
+IMG[51] data:... 1152x2048 complete=True
+```
+
+So the generation is complete when the **data URL image becomes loaded**.
+
+There are actually two images:
+
+- `IMG[50]` — a blob URL, already loaded
+- `IMG[51]` — a data URL, initially loading, then fully loaded
+
+I would use the **data URL image becoming `complete=True` with nonzero dimensions** as the generation-complete signal.
+
+## 1. Replace `wait_for_generated_image()`
+
+Use this:
+
+``` python
+async def wait_for_generated_image(driver, timeout: float):
+    """
+    Wait until Flat AI's generated image data URL has finished loading.
+
+    Returns the image element.
+    """
+    deadline = time.monotonic() + timeout
+
+    while time.monotonic() < deadline:
+        try:
+            raw = await driver.execute_script(
+                """
+                const images = [...document.images];
+
+                for (const img of images) {
+                    const src = img.currentSrc || img.src || "";
+
+                    if (
+                        src.startsWith("data:image/") &&
+                        img.complete &&
+                        img.naturalWidth > 0 &&
+                        img.naturalHeight > 0
+                    ) {
+                        return JSON.stringify({
+                            srcLength: src.length,
+                            width: img.naturalWidth,
+                            height: img.naturalHeight
+                        });
+                    }
+                }
+
+                return null;
+                """
+            )
+
+            if raw:
+                result = json.loads(raw)
+
+                print(
+                    "    generated image ready: "
+                    f"{result['width']}x{result['height']}, "
+                    f"data URL length={result['srcLength']}"
+                )
+
+                # Find and return the actual element.
+                images = await driver.find_elements(
+                    By.CSS_SELECTOR,
+                    "img",
+                )
+
+                for img in images:
+                    try:
+                        src = await img.get_attribute("src")
+
+                        if (
+                            src
+                            and src.startswith("data:image/")
+                            and len(src) == result["srcLength"]
+                        ):
+                            return img
+
+                    except Exception:
+                        pass
+
+        except Exception:
+            pass
+
+        await asyncio.sleep(0.25)
+
+    raise TimeoutError(
+        "Generated image did not become available before timeout."
+    )
+```
+
+This does **not** print the base64 data.
+
+It only prints:
+
+``` text
+generated image ready: 1152x2048, data URL length=454847
+```
+
+------------------------------------------------------------------------
+
+# 2. But there's an even better opportunity here
+
+Because the image is literally available as:
+
+``` text
+data:image/...;base64,...
+```
+
+we don't actually need to click the website's Download button for the initial image.
+
+We can extract the data URL and write the image directly to disk.
+
+That's much more reliable than:
+
+``` text
+click Download
+→ wait for Chrome download
+→ guess which file appeared
+```
+
+The browser has already handed us the complete image.
+
+I'd therefore change the image workflow to:
+
+``` text
+Generate
+    ↓
+wait for data URL
+    ↓
+extract base64
+    ↓
+decode
+    ↓
+write image to output directory
+```
+
+## 3. Add a function to save the data URL
+
+``` python
+import base64
+```
+
+Then:
+
+``` python
+async def save_data_url_image(
+    driver,
+    image,
+    target: Path,
+) -> Path:
+    data_url = await image.get_attribute("src")
+
+    if not data_url:
+        raise RuntimeError("Generated image has no src")
+
+    if not data_url.startswith("data:image/"):
+        raise RuntimeError(
+            f"Expected data:image URL, got {data_url[:100]!r}"
+        )
+
+    try:
+        header, encoded = data_url.split(",", 1)
+    except ValueError as exc:
+        raise RuntimeError("Malformed image data URL") from exc
+
+    data = base64.b64decode(encoded)
+
+    target = unique_target(target)
+    target.write_bytes(data)
+
+    print(
+        f"    saved {target} "
+        f"({len(data):,} bytes)"
+    )
+
+    return target
+```
+
+This requires:
+
+``` python
+import base64
+```
+
+at the top of your script.
+
+------------------------------------------------------------------------
+
+# 4. We need to determine the filename/seed
+
+Your current code gets the seed from the browser's downloaded filename:
+
+``` python
+seed = seed_from_filename(downloaded.name)
+```
+
+Obviously that won't work anymore if we're not downloading through Chrome.
+
+So before changing that part, let's inspect whether the generated image or surrounding DOM contains the seed.
+
+Your existing page diagnostic can be extended to search for likely seed information, but there's an even easier first test.
+
+After the image is ready, print **only the relevant metadata**, not the data URL:
+
+``` python
+metadata = await generated_image.execute_script(
+    """
+    const img = arguments[0];
+
+    return JSON.stringify({
+        id: img.id || "",
+        className: img.className || "",
+        alt: img.alt || "",
+        title: img.title || "",
+        parentText: (
+            img.parentElement?.innerText || ""
+        ).substring(0, 500),
+        parentClass: img.parentElement?.className || "",
+        parentId: img.parentElement?.id || ""
+    });
+    """,
+)
+
+print("    generated image metadata:")
+print(json.loads(metadata))
+```
+
+We may find something like:
+
+``` text
+alt="Generated image, seed 123456"
+```
+
+or a surrounding element with the seed.
+
+If not, that's okay. We can generate our own filename based on timestamp, or later identify the API response that contains the seed.
+
+------------------------------------------------------------------------
+
+# 5. There's another very useful clue here
+
+The two image sources suggest the application may be doing something like:
+
+``` text
+server/API response
+       ↓
+blob URL
+       ↓
+display image
+       ↓
+data URL conversion
+       ↓
+final image
+```
+
+The fact that the final image is a `data:` URL is particularly useful because **we can get the exact bytes the user sees** without having to reverse-engineer the site's Download button.
+
+So I'd stop using:
+
+``` python
+await click_download(...)
+await wait_for_download(...)
+```
+
+for the initial generated image.
+
+------------------------------------------------------------------------
+
+# 6. Let's modify `one_generation()` minimally first
+
+For the initial image, replace:
+
+``` python
+await wait_for_generated_image(driver, args.timeout)
+
+print("[10] Click Download")
+await click_download(driver, args.timeout)
+
+print("[11] Waiting for download...")
+downloaded = await wait_for_download(
+    download_dir,
+    before_download,
+    args.timeout,
+)
+
+seed = seed_from_filename(downloaded.name)
+
+if seed is None:
+    seed = str(int(time.time() * 1000))
+    print(
+        f"Warning: no seed in filename {downloaded.name!r}; "
+        f"using {seed}"
+    )
+
+non_upscaled = move_non_upscaled(
+    downloaded,
+    output_dir,
+    seed,
+)
+```
+
+with:
+
+``` python
+generated_image = await wait_for_generated_image(
+    driver,
+    args.timeout,
+)
+
+print("[10] Generated image is ready")
+
+seed = str(int(time.time() * 1000))
+
+suffix = ".png"
+
+non_upscaled = await save_data_url_image(
+    driver,
+    generated_image,
+    output_dir / f"{seed}{suffix}",
+)
+
+print(f"[11] Saved {non_upscaled}")
+```
+
+**Don't worry about the seed yet.** Using the timestamp temporarily is fine for debugging.
+
+------------------------------------------------------------------------
+
+# 7. One caveat: determine the actual image format
+
+Don't blindly assume `.png`.
+
+The data URL header tells us:
+
+``` text
+data:image/png;base64,...
+```
+
+or:
+
+``` text
+data:image/jpeg;base64,...
+```
+
+So make the saver determine the extension:
+
+``` python
+def extension_from_data_url_header(header: str) -> str:
+    mime = header.split(";", 1)[0].lower()
+
+    return {
+        "data:image/jpeg": ".jpg",
+        "data:image/jpg": ".jpg",
+        "data:image/png": ".png",
+        "data:image/webp": ".webp",
+        "data:image/gif": ".gif",
+    }.get(mime, ".img")
+```
+
+Then:
+
+``` python
+async def save_data_url_image(
+    image,
+    target_without_suffix: Path,
+) -> Path:
+    data_url = await image.get_attribute("src")
+
+    if not data_url or not data_url.startswith("data:image/"):
+        raise RuntimeError("Expected generated image data URL")
+
+    header, encoded = data_url.split(",", 1)
+
+    suffix = extension_from_data_url_header(header)
+
+    target = unique_target(
+        target_without_suffix.with_suffix(suffix)
+    )
+
+    data = base64.b64decode(encoded)
+
+    target.write_bytes(data)
+
+    print(
+        f"    saved {target} "
+        f"({len(data):,} bytes)"
+    )
+
+    return target
+```
+
+Notice that `driver` isn't even needed there.
+
+Call it as:
+
+``` python
+non_upscaled = await save_data_url_image(
+    generated_image,
+    output_dir / seed,
+)
+```
+
+------------------------------------------------------------------------
+
+## What I would do next
+
+Don't tackle upscaling yet.
+
+First get this pipeline working:
+
+``` text
+[8] Click Generate
+[9] Waiting for generated image...
+    generated image ready: 1152x2048, data URL length=454847
+[10] Generated image is ready
+    saved output/.../TIMESTAMP.png (341,xxx bytes)
+[11] Saved ...
+```
+
+Then open that saved file and verify that **it is exactly the generated image you see in Chromium**.
+
+Once that's working, we can investigate the **Upscale** operation separately. And the blob/data URL behavior gives us a good starting point for that too.
+
+Also, once this works, we can remove the DOM watcher entirely; it has served its purpose.
+
+## Prompt:
+
+9/25/2026, 11:22:39 PM
+
+the image seed is stored in the image toolbar:
+
+    <div class="image-toolbar image-toolbar--utility"><button type="button" class="seed-display" title="Copy seed 2320666938" style="display: inline-flex;">
+                <span class="seed-prefix">Seed</span>
+                <span class="seed-value">2320666938</span>
+                <span class="copy-icon" aria-hidden="true">
+                    <i class="fas fa-copy" data-fa-svg="copy" aria-hidden="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 8h13v13H8ZM3 16V3h13"></path></svg></i>
+                    <i class="fas fa-check" data-fa-svg="check" aria-hidden="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 12 5 5L20 6"></path></svg></i>
+                </span>
+            </button><button type="button" class="download-button" title="Download Image" style="display: inline-flex;">
+                <span class="image-action-icon"><i class="fas fa-download" data-fa-svg="download" aria-hidden="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"></path></svg></i></span>
+                <span class="image-action-label">Download</span>
+                
+            </button><button type="button" class="fa-report-button" title="Report this image"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 21V3m0 1c5-4 9 4 14 0v10c-5 4-9-4-14 0"></path></svg>Report</button></div>
+
+## Response:
+
+9/25/2026, 11:22:39 PM
+
+Yes — that gives us a clean way to get the real seed **without relying on the download filename**.
+
+The seed is directly available as:
+
+``` html
+<span class="seed-value">2320666938</span>
+```
+
+I’d add a small helper and use it immediately after `wait_for_generated_image()` succeeds.
+
+### 1. Add `get_image_seed()`
+
+``` python
+async def get_image_seed(driver, timeout: float = 10.0) -> str:
+    deadline = time.monotonic() + timeout
+
+    while time.monotonic() < deadline:
+        try:
+            raw = await driver.execute_script(
+                """
+                const el = document.querySelector(
+                    ".image-toolbar .seed-value"
+                );
+
+                if (!el) {
+                    return null;
+                }
+
+                const seed = el.textContent.trim();
+
+                return seed || null;
+                """
+            )
+
+            if raw:
+                seed = str(raw).strip()
+
+                if seed.isdigit():
+                    return seed
+
+        except Exception:
+            pass
+
+        await asyncio.sleep(0.1)
+
+    raise TimeoutError(
+        "Image seed did not become available before timeout."
+    )
+```
+
+This avoids clicking the seed button or interacting with the clipboard.
+
+### 2. Then change your generation flow
+
+Since we already know the generated image becomes a `data:image/...` URL, I'd make the sequence:
+
+``` python
+print("[9] Waiting for generated image...")
+
+generated_image = await wait_for_generated_image(
+    driver,
+    args.timeout,
+)
+
+print("[10] Generated image is ready")
+
+seed = await get_image_seed(driver)
+
+print(f"    seed: {seed}")
+
+non_upscaled = await save_data_url_image(
+    generated_image,
+    output_dir / seed,
+)
+
+print(f"[11] Saved {non_upscaled}")
+```
+
+So for your example, the output becomes something like:
+
+``` text
+[9] Waiting for generated image...
+    generated image ready: 1152x2048, data URL length=454847
+[10] Generated image is ready
+    seed: 2320666938
+    saved output/2320666938.png (341,xxx bytes)
+[11] Saved output/2320666938.png
+```
+
+The actual extension will still be determined from the `data:image/...` header rather than assuming PNG.
+
+### 3. Even better: return the seed from the same JS call
+
+Because the seed and generated image appear together, we can eventually make `wait_for_generated_image()` return both pieces of information. That would eliminate another polling loop:
+
+``` python
+return {
+    "image": img,
+    "seed": seed,
+}
+```
+
+But I recommend **keeping them separate for the moment** while we're debugging. It gives us a much clearer signal about whether image completion or seed detection is failing.
+
+### One important detail
+
+Your toolbar has:
+
+``` html
+<div class="image-toolbar image-toolbar--utility">
+```
+
+There could potentially be **multiple toolbars on the page** after you start using Upscale. So don't blindly grab every `.seed-value` forever. For the initial generation, the first available `.image-toolbar .seed-value` should be fine; once we wire up Upscale, we should make the selector target the toolbar belonging to the newest/generated image.
+
+For now, I'd get **Generate → data URL → seed → save** working completely before touching the Upscale stage.
+
+## Prompt:
+
+9/25/2026, 11:36:49 PM
+
+ok, now downloading the generated image is working.  
+next bug:  
+now the scraper fails to request the generation of the upscaled image.  
+in the image toolbar, instead of "upscale" it clicks "create variation", which opens an "open file" dialog, but when i close that dialog it comes up again and again.....
+
+## Response:
+
+9/25/2026, 11:36:50 PM
+
+That sounds like a **selector ambiguity**, not an upscale-generation failure.
+
+Your current `click_text()` is probably finding the wrong `"Create variation"`/`"Upscale"` control. The file dialog strongly suggests the clicked button is the site's **variation/upload action**, rather than the Upscale action.
+
+Since the image toolbar HTML is now available, the safest fix is to **stop locating Upscale by generic visible text** and inspect the actual toolbar buttons.
+
+Please capture the HTML for the toolbar **after the generated image appears**, especially the toolbar containing the Upscale control. You can dump just the relevant buttons without triggering clicks:
+
+``` python
+raw = await driver.execute_script(
+    """
+    return JSON.stringify(
+        [...document.querySelectorAll(".image-toolbar")].map(
+            (toolbar, toolbarIndex) => ({
+                toolbarIndex,
+                text: toolbar.innerText,
+                buttons: [...toolbar.querySelectorAll("button")].map(
+                    (button, buttonIndex) => ({
+                        buttonIndex,
+                        text: button.innerText.trim(),
+                        title: button.getAttribute("title"),
+                        className: button.className,
+                        outerHTML: button.outerHTML
+                    })
+                )
+            })
+        )
+    );
+    """
+)
+
+print(json.dumps(json.loads(raw), indent=2))
+```
+
+This is deliberately using `JSON.stringify()` because of the `JSUnserializable` issue we encountered earlier.
+
+### What I'm looking for
+
+Something along the lines of:
+
+``` text
+toolbar 0
+  button 0: Seed
+  button 1: Download
+  button 2: ...
+  button 3: Create variation
+  button 4: Upscale
+```
+
+or perhaps:
+
+``` html
+<button title="Upscale Image" ...>
+```
+
+or a distinctive class/data attribute.
+
+Once we have that, we can make the Upscale click deterministic, for example:
+
+``` python
+async def click_upscale(driver):
+    button = await wait_for_element(
+        driver,
+        [
+            (By.CSS_SELECTOR, 'button[title="Upscale Image"]'),
+            # exact selector once we inspect the actual HTML
+        ],
+        10,
+    )
+
+    await js_click(button)
+```
+
+### Also: stop the repeated file dialogs
+
+For now, **don't close the dialog repeatedly and let the scraper continue**. That behavior is a consequence of the scraper repeatedly clicking the wrong control.
+
+Your current flow is effectively:
+
+``` text
+Generate
+  ↓
+image appears
+  ↓
+wrong button clicked
+  ↓
+Create variation
+  ↓
+file chooser opens
+  ↓
+close it
+  ↓
+scraper still running / clicks again
+  ↓
+file chooser opens again
+```
+
+Once we identify the actual Upscale button, the file chooser should disappear from this path entirely.
+
+Send me the output of that toolbar dump (you can omit the huge SVG/path portions if there are any). Then we can replace the Upscale selector with an exact one.
 
 ------------------------------------------------------------------------
 

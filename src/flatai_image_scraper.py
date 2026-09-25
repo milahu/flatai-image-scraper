@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+
+# FIXME handle errors from the image generator
+# error messages like "sorry, something went wrong, please try again"
+
 """
 Flat AI infinite image generator/downloader.
 
@@ -29,6 +33,7 @@ import re
 import shutil
 import sys
 import time
+import base64
 from pathlib import Path
 
 import piexif
@@ -38,10 +43,14 @@ from selenium_driverless import webdriver
 from selenium_driverless.types.by import By
 
 
+debug_generated_image_dom_change = False
+
+
 GENERATOR_NAME = "Flat AI"
 GENERATOR_URL = "https://flatai.org/ai-image-generator-free-no-signup/"
 LOGIN_URL = "https://flatai.org/login/"
 DEFAULT_CONFIG = "config.json"
+IMAGE_SUFFIX = ".jpg"
 
 ASPECT_RATIOS = ("1:1", "16:9", "4:3", "9:16", "3:4")
 
@@ -459,44 +468,6 @@ def download_snapshot(download_dir: Path) -> dict[str, float]:
     return result
 
 
-async def wait_for_download(
-    download_dir: Path, before: dict[str, float], timeout: float
-) -> Path:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        candidates = []
-        for p in download_dir.iterdir():
-            if not p.is_file():
-                continue
-            if p.name.endswith((".crdownload", ".tmp", ".part")):
-                continue
-            try:
-                mtime = p.stat().st_mtime_ns
-            except OSError:
-                continue
-            if p.name not in before or mtime > before[p.name]:
-                candidates.append(p)
-
-        if candidates:
-            # A download is complete once Chrome's temporary .crdownload file
-            # has disappeared and the file has stopped changing.
-            candidates.sort(key=lambda x: x.stat().st_mtime_ns, reverse=True)
-            candidate = candidates[0]
-            size1 = candidate.stat().st_size
-            await asyncio.sleep(0.4)
-            if candidate.exists() and candidate.stat().st_size == size1:
-                return candidate
-
-        await asyncio.sleep(0.25)
-
-    raise TimeoutError(f"No completed browser download appeared in {download_dir}")
-
-
-def seed_from_filename(name: str) -> str | None:
-    m = re.search(r"seed-(\d+)", name, flags=re.I)
-    return m.group(1) if m else None
-
-
 def unique_target(path: Path) -> Path:
     if not path.exists():
         return path
@@ -507,20 +478,6 @@ def unique_target(path: Path) -> Path:
         if not candidate.exists():
             return candidate
         n += 1
-
-
-def move_non_upscaled(downloaded: Path, output_dir: Path, seed: str) -> Path:
-    suffix = downloaded.suffix.lower() or ".jpg"
-    target = unique_target(output_dir / f"{seed}{suffix}")
-    shutil.move(str(downloaded), str(target))
-    return target
-
-
-def move_upscaled(downloaded: Path, output_dir: Path, seed: str) -> Path:
-    suffix = downloaded.suffix.lower() or ".jpg"
-    target = unique_target(output_dir / f"{seed}.upscaled{suffix}")
-    shutil.move(str(downloaded), str(target))
-    return target
 
 
 def add_exif(path: Path, params: dict):
@@ -562,61 +519,72 @@ def add_exif(path: Path, params: dict):
 
 async def wait_for_generated_image(driver, timeout: float):
     """
-    Wait until Flat AI has produced a real generated image.
+    Wait until Flat AI's generated image data URL has finished loading.
 
-    Returns the <img> element containing the generated image.
+    Returns the image element.
     """
     deadline = time.monotonic() + timeout
 
-    xpath = (
-        '//img[contains(@src, "/ai-image/")]'
-        ' | '
-        '//a[contains(@href, "/ai-image/")]//img'
-    )
-
-    last_seen = None
-
     while time.monotonic() < deadline:
         try:
-            elems = await driver.find_elements(By.XPATH, xpath)
+            raw = await driver.execute_script(
+                """
+                const images = [...document.images];
 
-            for el in elems:
-                try:
-                    src = await el.get_attribute("src")
+                for (const img of images) {
+                    const src = img.currentSrc || img.src || "";
 
-                    if not src:
-                        continue
+                    if (
+                        src.startsWith("data:image/") &&
+                        img.complete &&
+                        img.naturalWidth > 0 &&
+                        img.naturalHeight > 0
+                    ) {
+                        return JSON.stringify({
+                            srcLength: src.length,
+                            width: img.naturalWidth,
+                            height: img.naturalHeight
+                        });
+                    }
+                }
 
-                    if "/ai-image/" not in src:
-                        continue
+                return null;
+                """
+            )
 
-                    # Avoid accepting a stale/incomplete element.
-                    complete = await el.execute_script(
-                        """
-                        const img = arguments[0];
-                        return img.complete &&
-                               img.naturalWidth > 0 &&
-                               img.naturalHeight > 0;
-                        """,
-                        el,
-                    )
+            if raw:
+                result = json.loads(raw)
 
-                    if not complete:
-                        continue
+                print(
+                    "    generated image ready: "
+                    f"{result['width']}x{result['height']}, "
+                    f"data URL length={result['srcLength']}"
+                )
 
-                    if src != last_seen:
-                        print(f"    generated image: {src[:160]}...")
-                        last_seen = src
+                # Find and return the actual element.
+                images = await driver.find_elements(
+                    By.CSS_SELECTOR,
+                    "img",
+                )
 
-                    return el
+                for img in images:
+                    try:
+                        src = await img.get_attribute("src")
 
-                except Exception:
-                    pass
+                        if (
+                            src
+                            and src.startswith("data:image/")
+                            and len(src) == result["srcLength"]
+                        ):
+                            return img
+
+                    except Exception:
+                        pass
 
         except Exception:
             pass
 
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.25)
 
     raise TimeoutError(
         "Generated image did not become available before timeout."
@@ -634,18 +602,74 @@ async def wait_for_generate_button(driver, timeout: float):
     )
 
 
-async def click_download(driver, timeout: float):
-    # User-visible tooltip/title is "Download Image" according to the HAR/UI.
-    selectors = [
-        (By.XPATH, '//*[@title="Download Image"]'),
-        (By.XPATH, '//*[@aria-label="Download Image"]'),
-        (By.XPATH, '//*[normalize-space(text())="Download"]'),
-        (By.XPATH, '//button[contains(@title,"Download")]'),
-        (By.XPATH, '//a[contains(@download,"flatai")]'),
-    ]
-    el = await wait_for_element(driver, selectors, timeout)
-    # await el.click(move_to=True)
-    await js_click(el)
+async def save_data_url_image(
+        driver,
+        image,
+        target: Path,
+    ) -> Path:
+    data_url = await image.get_attribute("src")
+
+    if not data_url:
+        raise RuntimeError("Generated image has no src")
+
+    if not data_url.startswith("data:image/"):
+        raise RuntimeError(
+            f"Expected data:image URL, got {data_url[:100]!r}"
+        )
+
+    try:
+        header, encoded = data_url.split(",", 1)
+    except ValueError as exc:
+        raise RuntimeError("Malformed image data URL") from exc
+
+    data = base64.b64decode(encoded)
+
+    target = unique_target(target)
+    target.write_bytes(data)
+
+    print(
+        f"    saved {target} "
+        f"({len(data):,} bytes)"
+    )
+
+    return target
+
+
+async def get_image_seed(driver, timeout: float = 10.0) -> str:
+    deadline = time.monotonic() + timeout
+
+    while time.monotonic() < deadline:
+        try:
+            raw = await driver.execute_script(
+                """
+                const el = document.querySelector(
+                    ".image-toolbar .seed-value"
+                );
+
+                if (!el) {
+                    return null;
+                }
+
+                const seed = el.textContent.trim();
+
+                return seed || null;
+                """
+            )
+
+            if raw:
+                seed = str(raw).strip()
+
+                if seed.isdigit():
+                    return seed
+
+        except Exception:
+            pass
+
+        await asyncio.sleep(0.1)
+
+    raise TimeoutError(
+        "Image seed did not become available before timeout."
+    )
 
 
 async def upscale_current_image(driver, timeout: float):
@@ -660,13 +684,13 @@ async def upscale_current_image(driver, timeout: float):
 
 
 async def one_generation(
-    driver,
-    args,
-    output_dir: Path,
-    params: dict,
-    download_dir: Path,
-    iteration: int,
-):
+        driver,
+        args,
+        output_dir: Path,
+        params: dict,
+        download_dir: Path,
+        iteration: int,
+    ):
     print(f"\n=== Generation {iteration} ===")
 
     # 5. Prompt
@@ -687,62 +711,257 @@ async def one_generation(
 
     # 8. Generate.
     print("[8] Click Generate")
+    if debug_generated_image_dom_change:
+        await debug_generator_state(driver, "BEFORE GENERATE")
     before_download = download_snapshot(download_dir)
     generate = await wait_for_generate_button(driver, args.timeout)
     # await generate.click(move_to=True)
     await js_click(generate)
 
-    # 9. Wait.
+    if debug_generated_image_dom_change:
+        # debug
+        print("[8] Generate clicked")
+        await debug_watch_generator(
+            driver,
+            seconds=99999999,
+        )
+        raise RuntimeError("Stopped after generator debugging")
+
     print("[9] Waiting for generated image...")
-    # await wait_for_generated_image(driver, args.timeout)
-    image = await wait_for_generated_image(driver, args.timeout)
-    src = await image.get_attribute("src")
-    if src:
-        if src.startswith("data:"):
-            print("    generated image uses a data URL")
-            print(f"    data URL length: {len(src)}")
-        else:
-            print(f"    generated image URL: {src[:200]}")
-
-    # 10–11. Download non-upscaled image.
-    print("[10] Click Download")
-    await click_download(driver, args.timeout)
-    print("[11] Waiting for download...")
-    downloaded = await wait_for_download(download_dir, before_download, args.timeout)
-
-    # The site names generated downloads like:
-    # flatai-generated-image-seed-721845929.jpg
-    seed = seed_from_filename(downloaded.name)
-    if seed is None:
-        # Fallback: the generation response exposes the seed in the UI/DOM in
-        # current versions; if the filename changes, use a timestamp-safe ID.
-        seed = str(int(time.time() * 1000))
-        print(f"Warning: no seed in filename {downloaded.name!r}; using {seed}")
-
-    non_upscaled = move_non_upscaled(downloaded, output_dir, seed)
-    print(f"[12] Saved {non_upscaled}")
+    generated_image = await wait_for_generated_image(driver, args.timeout)
+    print("[10] Generated image is ready")
+    seed = await get_image_seed(driver)
+    print(f"    seed: {seed}")
+    non_upscaled = (output_dir / seed).with_suffix(IMAGE_SUFFIX)
+    non_upscaled = await save_data_url_image(driver, generated_image, non_upscaled)
+    print(f"[11] Saved {non_upscaled}")
 
     # 13–18. Upscale is a separate Flat AI job.
     before_upscale_download = download_snapshot(download_dir)
     await upscale_current_image(driver, args.timeout)
 
     print("[15] Waiting for upscale generation...")
-    await wait_for_generated_image(driver, args.timeout)
-
-    print("[16] Click Download")
-    await click_download(driver, args.timeout)
-
-    print("[17] Waiting for upscale download...")
-    upscaled_download = await wait_for_download(
-        download_dir, before_upscale_download, args.timeout
-    )
-    upscaled = move_upscaled(upscaled_download, output_dir, seed)
-    print(f"[18] Saved {upscaled}")
+    generated_image = await wait_for_generated_image(driver, args.timeout)
+    print("[16] upscaled image is ready")
+    seed = await get_image_seed(driver)
+    print(f"    seed: {seed}")
+    upscaled = (output_dir / seed).with_suffix(".upscaled" + IMAGE_SUFFIX)
+    upscaled = await save_data_url_image(driver, generated_image, upscaled)
+    print(f"[17] Saved {upscaled}")
 
     # Add the same input metadata to both files.
     add_exif(non_upscaled, params)
     add_exif(upscaled, params)
     print("    EXIF metadata written")
+
+
+async def debug_generator_state(driver, label: str):
+    raw = await driver.execute_script(
+        """
+        const result = {
+            url: location.href,
+            title: document.title,
+            bodyText: (document.body.innerText || "").substring(0, 3000),
+            images: [],
+            links: [],
+            buttons: []
+        };
+
+        for (const img of document.images) {
+            const src = img.currentSrc || img.src || "";
+
+            result.images.push({
+                src: src.startsWith("data:")
+                    ? "data:... (" + src.length + " chars)"
+                    : src.substring(0, 300),
+                width: img.naturalWidth,
+                height: img.naturalHeight,
+                complete: img.complete,
+                alt: img.alt || "",
+                visible: !!(
+                    img.offsetWidth ||
+                    img.offsetHeight ||
+                    img.getClientRects().length
+                )
+            });
+        }
+
+        for (const a of document.querySelectorAll("a")) {
+            const href = a.href || "";
+
+            if (
+                href.includes("/ai-image/") ||
+                href.includes("/image/") ||
+                /\\.(jpg|jpeg|png|webp)(\\?|$)/i.test(href)
+            ) {
+                result.links.push({
+                    href: href.substring(0, 300),
+                    text: (a.innerText || "").trim().substring(0, 100)
+                });
+            }
+        }
+
+        for (const button of document.querySelectorAll("button")) {
+            const text = (button.innerText || "").trim();
+
+            if (
+                text ||
+                button.id ||
+                button.getAttribute("aria-label")
+            ) {
+                result.buttons.push({
+                    id: button.id || "",
+                    text: text.substring(0, 100),
+                    aria: button.getAttribute("aria-label") || "",
+                    disabled: !!button.disabled
+                });
+            }
+        }
+
+        return JSON.stringify(result);
+        """
+    )
+
+    state = json.loads(raw)
+
+    print(f"\n--- generator state: {label} ---")
+    print(f"URL: {state['url']}")
+    print(f"TITLE: {state['title']}")
+
+    print("TEXT:")
+    print(state["bodyText"])
+
+    print("IMAGES:")
+    for i, img in enumerate(state["images"]):
+        if img["src"].startswith("https://flatai.org/wp-content/uploads/"):
+            continue
+        if img["src"] == "https://flatai.org/ai-image-generator-free-no-signup/":
+            continue
+        if img["src"] == "":
+            continue
+        print(
+            f"  IMG[{i}]: "
+            f"{img['width']}x{img['height']} "
+            f"complete={img['complete']} "
+            f"visible={img['visible']} "
+            f"src={img['src']!r} "
+            f"alt={img['alt']!r}"
+        )
+
+    print("LINKS:")
+    for i, link in enumerate(state["links"]):
+        print(
+            f"  LINK[{i}]: "
+            f"href={link['href']!r} "
+            f"text={link['text']!r}"
+        )
+
+    if 0:
+        print("BUTTONS:")
+        for i, button in enumerate(state["buttons"]):
+            print(
+                f"  BUTTON[{i}]: "
+                f"id={button['id']!r} "
+                f"text={button['text']!r} "
+                f"aria={button['aria']!r} "
+                f"disabled={button['disabled']}"
+            )
+
+
+async def debug_watch_generator(driver, seconds: float = 60.0):
+    print(f"\nWatching generator DOM for {seconds:.0f} seconds...")
+
+    previous = None
+    deadline = time.monotonic() + seconds
+
+    while time.monotonic() < deadline:
+        raw = await driver.execute_script(
+            """
+            const result = {
+                url: location.href,
+                images: [],
+                buttons: [],
+                text: (document.body.innerText || "").substring(0, 5000)
+            };
+
+            for (const img of document.images) {
+                const src = img.currentSrc || img.src || "";
+
+                result.images.push({
+                    src: src.startsWith("data:")
+                        ? "data:... (" + src.length + " chars)"
+                        : src.substring(0, 200),
+                    width: img.naturalWidth,
+                    height: img.naturalHeight,
+                    complete: img.complete,
+                    visible: !!(
+                        img.offsetWidth ||
+                        img.offsetHeight ||
+                        img.getClientRects().length
+                    )
+                });
+            }
+
+            for (const button of document.querySelectorAll("button")) {
+                result.buttons.push({
+                    id: button.id || "",
+                    text: (button.innerText || "").trim().substring(0, 100),
+                    disabled: !!button.disabled,
+                    aria: button.getAttribute("aria-label") || ""
+                });
+            }
+
+            return JSON.stringify(result);
+            """
+        )
+
+        state = json.loads(raw)
+
+        current = json.dumps(
+            state,
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+
+        if current != previous:
+            print("\n--- DOM CHANGE ---")
+            print(f"URL: {state['url']}")
+
+            print("IMAGES:")
+            for i, img in enumerate(state["images"]):
+                if img["src"].startswith("https://flatai.org/wp-content/uploads/"):
+                    continue
+                if img["src"] == "https://flatai.org/ai-image-generator-free-no-signup/":
+                    continue
+                if img["src"] == "":
+                    continue
+                print(
+                    f"  IMG[{i}]: "
+                    f"{img['width']}x{img['height']} "
+                    f"complete={img['complete']} "
+                    f"visible={img['visible']} "
+                    f"src={img['src']!r}"
+                )
+
+            if 0:
+                print("BUTTONS:")
+                for i, button in enumerate(state["buttons"]):
+                    print(
+                        f"  BUTTON[{i}]: "
+                        f"id={button['id']!r} "
+                        f"text={button['text']!r} "
+                        f"disabled={button['disabled']} "
+                        f"aria={button['aria']!r}"
+                    )
+
+                print("PAGE TEXT:")
+                print(state["text"])
+
+            previous = current
+
+        await asyncio.sleep(0.5)
+
+    print("\nFinished DOM watch.")
 
 
 async def main_async():
