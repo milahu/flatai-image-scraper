@@ -910,6 +910,7 @@ async def one_generation(
         await asyncio.sleep(999)
 
     # 6–7. Ratio and style.
+    print(f"set_aspect_ratio {args.aspect_ratio!r}")
     await set_aspect_ratio(driver, args.aspect_ratio, args.timeout)
     await set_style(driver, style, args.timeout)
 
