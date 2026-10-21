@@ -702,6 +702,12 @@ async def wait_for_generated_image(driver, timeout: float):
     step_idx = -1
     while time.monotonic() < deadline:
         step_idx += 1
+        if 1:
+            # print the elapsed time every second
+            print(f"{step_idx + 1} ", end="", flush=True)
+            # print a new line every 10 seconds
+            if (step_idx + 1) % 10 == 0:
+                print()
         if 0:
             # debug
             print(f"wait_for_generated_image: step {step_idx + 1}")
