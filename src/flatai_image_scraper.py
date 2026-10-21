@@ -115,6 +115,8 @@ def parse_args() -> argparse.Namespace:
                     help="Image aspect ratio (default: 1:1).")
     p.add_argument("--style", choices=STYLES, default="Flat AI Ultra",
                     help='Image style (default: "Flat AI Ultra").')
+    p.add_argument("--upscale", action="store_true",
+                    help='Also request an upscaled version of all generated images.')
     p.add_argument("--output-root", default="output",
                     help="Output root directory (default: ./output).")
     p.add_argument("--timeout", type=float, default=180.0,
@@ -688,6 +690,7 @@ async def one_generation(
         args,
         output_dir: Path,
         params: dict,
+        upscale: bool,
         download_dir: Path,
         iteration: int,
     ):
@@ -736,23 +739,30 @@ async def one_generation(
     non_upscaled = await save_data_url_image(driver, generated_image, non_upscaled)
     print(f"[11] Saved {non_upscaled}")
 
-    # 13–18. Upscale is a separate Flat AI job.
-    before_upscale_download = download_snapshot(download_dir)
-    await upscale_current_image(driver, args.timeout)
-
-    print("[15] Waiting for upscale generation...")
-    generated_image = await wait_for_generated_image(driver, args.timeout)
-    print("[16] upscaled image is ready")
+    # TODO? get seed from non_upscaled filename
     seed = await get_image_seed(driver)
     print(f"    seed: {seed}")
-    upscaled = (output_dir / seed).with_suffix(".upscaled" + IMAGE_SUFFIX)
-    upscaled = await save_data_url_image(driver, generated_image, upscaled)
-    print(f"[17] Saved {upscaled}")
 
-    # Add the same input metadata to both files.
+    params["seed"] = seed
+
     add_exif(non_upscaled, params)
-    add_exif(upscaled, params)
     print("    EXIF metadata written")
+
+    if upscale:
+        # 13–18. Upscale is a separate Flat AI job.
+        before_upscale_download = download_snapshot(download_dir)
+        await upscale_current_image(driver, args.timeout)
+
+        print("[15] Waiting for upscale generation...")
+        generated_image = await wait_for_generated_image(driver, args.timeout)
+        print("[16] upscaled image is ready")
+
+        upscaled = (output_dir / seed).with_suffix(".upscaled" + IMAGE_SUFFIX)
+        upscaled = await save_data_url_image(driver, generated_image, upscaled)
+        print(f"[17] Saved {upscaled}")
+
+        add_exif(upscaled, params)
+        print("    EXIF metadata written")
 
 
 async def debug_generator_state(driver, label: str):
@@ -970,6 +980,7 @@ async def main_async():
 
     params = make_input_parameters(args, username)
     output_dir = make_output_dir(args.output_root, params)
+    upscale = args.upscale
 
     # A private download directory prevents unrelated Chrome downloads from
     # being mistaken for generated images.
@@ -1011,6 +1022,7 @@ async def main_async():
                     args,
                     output_dir,
                     params,
+                    upscale,
                     download_dir,
                     iteration,
                 )
