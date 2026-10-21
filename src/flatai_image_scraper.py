@@ -265,6 +265,7 @@ async def js_click(el):
 
 
 async def fill(el, value: str):
+    assert el, f"fill: no element"
     await el.execute_script(
         """
         const el = arguments[0];
@@ -723,16 +724,25 @@ async def one_generation(
     print(f"\n=== Generation {iteration} ===")
 
     # 5. Prompt
+    prompt_box_selector = [
+        # (By.CSS_SELECTOR, "textarea"),
+        # (By.XPATH, '//textarea[contains(@placeholder,"Your prompt")]'),
+        # (By.XPATH, '//textarea[contains(@aria-label,"Your prompt")]'),
+        (By.CSS_SELECTOR, "textarea#prompt"),
+    ]
     prompt_box = await wait_for_element(
         driver,
-        [
-            (By.CSS_SELECTOR, "textarea"),
-            (By.XPATH, '//textarea[contains(@placeholder,"Your prompt")]'),
-            (By.XPATH, '//textarea[contains(@aria-label,"Your prompt")]'),
-        ],
+        prompt_box_selector,
         args.timeout,
     )
     await fill(prompt_box, args.prompt)
+
+    if 0:
+        # debug
+        print(f"prompt_box: {prompt_box}")
+        # assert prompt_box, f"not found prompt_box. prompt_box={prompt_box!r}"
+        print("done fill prompt_box")
+        await asyncio.sleep(999)
 
     # 6–7. Ratio and style.
     await set_aspect_ratio(driver, args.aspect_ratio, args.timeout)
