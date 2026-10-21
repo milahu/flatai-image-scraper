@@ -772,8 +772,6 @@ async def wait_for_generated_image(driver, timeout: float):
 
                 result_images = []
 
-                print(f"    found {len(js_image)} generated images:")
-
                 if "srcLength" in js_image:
                     print(
                         "      generated image ready: "
