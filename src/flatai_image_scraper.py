@@ -57,6 +57,24 @@ GENERATED_IMAGE_SELECTOR = "img.generated-image"
 # TODO update to sync with the server options
 ASPECT_RATIOS = ("1:1", "16:9", "4:3", "9:16", "3:4")
 
+# value: get the current value of aspect-ratio
+ASPECT_RATIO_VALUE_SELECTOR = "button.fa-format-trigger > span.fa-format-short-value"
+
+# toggle: click this element to toggle the aspect-ratio menu
+# toggle = open or close
+ASPECT_RATIO_DROPDOWN_TOGGLE_SELECTOR = "div.fa-image-format > button.fa-format-trigger"
+
+# menu: container with buttons for different values
+ASPECT_RATIO_DROPDOWN_MENU_SELECTOR = "div#fa-format-options.fa-dropdown-open"
+
+# value button: click this element to set a new value for aspect-ratio
+# the format string "{value}" will be replaced with an aspect ratio like "1:1" or "16:9"
+ASPECT_RATIO_DROPDOWN_VALUE_BUTTON_SELECTOR = "div#fa-format-options > button[data-value='{value}']"
+
+# all buttons of the aspect-ratio menu
+# available values are stored in the "data-value" attribute of each button
+ASPECT_RATIO_DROPDOWN_ALL_BUTTONS_SELECTOR = "div#fa-format-options > button"
+
 # TODO update to sync with the server options
 DEFAULT_STYLE = "Flat AI Ultra"
 CYCLE_STYLE = "(cycle)"
@@ -463,17 +481,22 @@ async def select_dropdown_text(driver, label: str, value: str, timeout: float):
 
 
 async def set_aspect_ratio(driver, ratio: str, timeout: float):
-    # The Flat AI UI may expose ratio buttons directly.
-    try:
-        await click_text(driver, ratio, timeout, exact=True)
-        print(f"    aspect ratio: {ratio}")
+    # get the current value
+    elem = await wait_for_element(driver, [(By.CSS_SELECTOR, ASPECT_RATIO_VALUE_SELECTOR)], timeout)
+    current_ratio = await elem.get_attribute("innerText")
+    if ratio == current_ratio:
+        print(f"set_aspect_ratio: nothing to do")
         return
-    except TimeoutError:
-        pass
 
-    # Try common custom-select containers.
-    await select_dropdown_text(driver, "Aspect Ratio", ratio, timeout)
-    print(f"    aspect ratio: {ratio}")
+    print(f"set_aspect_ratio: opening the aspect-ratio menu")
+    elem = await wait_for_element(driver, [(By.CSS_SELECTOR, ASPECT_RATIO_DROPDOWN_TOGGLE_SELECTOR)], timeout)
+    await elem.click()
+
+    print(f"set_aspect_ratio: clicking the value button")
+    selector = ASPECT_RATIO_DROPDOWN_VALUE_BUTTON_SELECTOR.format(value=ratio)
+    elem = await wait_for_element(driver, [(By.CSS_SELECTOR, selector)], timeout)
+    # TODO validate ratio. if ratio is invalid then elem is not found
+    await elem.click()
 
 
 async def set_style(driver, style: str, timeout: float):
