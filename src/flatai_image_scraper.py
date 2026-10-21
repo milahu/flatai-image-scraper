@@ -75,6 +75,39 @@ ASPECT_RATIO_DROPDOWN_VALUE_BUTTON_SELECTOR = "div#fa-format-options > button[da
 # available values are stored in the "data-value" attribute of each button
 ASPECT_RATIO_DROPDOWN_ALL_BUTTONS_SELECTOR = "div#fa-format-options > button"
 
+
+
+# value: get the current value of style
+# the current style name is stored in the "title" attribute
+# document.querySelector("div.style-model-item.active").getAttribute("title")
+STYLE_GET_VALUE_SELECTOR = "div.style-models-grid > div.style-model-item.active"
+
+# click this element to set the style value
+# document.querySelector("div.style-models-grid > div.style-model-item[role='button'][title='Flat AI Ultra']").click()
+# document.querySelector("div.style-models-grid > div.style-model-item[role='button'][title='Anatomix']").click()
+STYLE_SET_VALUE_SELECTOR = "div.style-models-grid > div.style-model-item[role='button'][title='{style}']"
+
+# all values: get the values of all available styles
+# each style name is stored in the "title" attribute of the div.style-model-item element
+STYLE_GET_ALL_VALUES_SELECTOR = "div.style-models-grid > div.style-model-item"
+
+# not used
+# for now we can get and set the style without setting the correct style category
+r'''
+# the style category is stored in the "data-category" attribute
+# category="general" # main styles
+# category="artistic" # experimental styles
+# document.querySelector("button.style-tab.active").getAttribute("data-category")
+STYLE_GET_CATEGORY_SELECTOR = "button.style-tab.active"
+
+# click this element to activate the style menu for category=value
+# document.querySelector("button.style-tab[type='button'][data-category='general']").click()
+# document.querySelector("button.style-tab[type='button'][data-category='artistic']").click()
+STYLE_SET_CATEGORY_SELECTOR = "button.style-tab[type='button'][data-category='{value}']"
+'''
+
+
+
 # TODO update to sync with the server options
 DEFAULT_STYLE = "Flat AI Ultra"
 CYCLE_STYLE = "(cycle)"
@@ -500,16 +533,30 @@ async def set_aspect_ratio(driver, ratio: str, timeout: float):
 
 
 async def set_style(driver, style: str, timeout: float):
-    # The style gallery is normally directly clickable.
-    try:
-        await click_text(driver, style, timeout, exact=True)
-        print(f"    style: {style}")
+    # get the current value
+    elem = await wait_for_element(driver, [(By.CSS_SELECTOR, STYLE_GET_VALUE_SELECTOR)], timeout)
+    current_style = await elem.get_attribute("title")
+    if style == current_style:
+        print(f"set_style: nothing to do")
         return
-    except TimeoutError:
-        pass
 
-    await select_dropdown_text(driver, "Style", style, timeout)
+    print(f"set_style: clicking the value button")
+    selector = STYLE_SET_VALUE_SELECTOR.format(style=style)
+    try:
+        elem = await wait_for_element(driver, [(By.CSS_SELECTOR, selector)], timeout=5)
+    except TimeoutError as exc:
+        raise ValueError(f"failed to set style {style!r}")
+    await elem.click()
     print(f"    style: {style}")
+
+
+async def get_all_styles(driver, timeout=30):
+    styles = []
+    elems = await wait_for_elements(driver, By.CSS_SELECTOR, STYLE_GET_ALL_VALUES_SELECTOR, timeout)
+    for elem in elems:
+        style = await elem.get_attribute("title")
+        styles.append(style)
+    return tuple(styles)
 
 
 def download_snapshot(download_dir: Path) -> dict[str, float]:
@@ -912,6 +959,7 @@ async def one_generation(
     # 6–7. Ratio and style.
     print(f"set_aspect_ratio {args.aspect_ratio!r}")
     await set_aspect_ratio(driver, args.aspect_ratio, args.timeout)
+    print(f"set_style {style!r}")
     await set_style(driver, style, args.timeout)
 
     # 8. Generate.
@@ -1179,6 +1227,10 @@ async def debug_watch_generator(driver, seconds: float = 60.0):
 
 
 async def main_async():
+
+    # get write access
+    global STYLES
+
     args = parse_args()
     username, password = load_credentials(args)
 
@@ -1227,6 +1279,21 @@ async def main_async():
 
         # Let the SPA finish rendering.
         await asyncio.sleep(2)
+
+        # get the actual available list of styles
+        all_styles = await get_all_styles(driver)
+        if STYLES != all_styles:
+            STYLES = all_styles
+            print(f"TODO update the STYLES list in {__file__}:")
+            print("STYLES = (")
+            for style in STYLES:
+                print(f'    "{style}",')
+            print(")")
+
+        if args.style not in MAGIC_STYLES:
+            # validate args.style
+            if args.style not in STYLES:
+                raise ValueError(f"invalid style. args.style={args.style!r} is not in STYLES={STYLES}")
 
         iteration = 1
         while True:
