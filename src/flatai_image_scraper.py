@@ -229,7 +229,8 @@ def make_input_parameters(args: argparse.Namespace, style: str, username: str) -
         "prompt": args.prompt,
         "aspect_ratio": args.aspect_ratio,
         "style": style,
-        "username": username,
+        # the username should have no effect on the generated images
+        # "username": username,
     }
 
 
