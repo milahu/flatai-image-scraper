@@ -34,6 +34,7 @@ import shutil
 import sys
 import time
 import base64
+import binascii
 from pathlib import Path
 
 import piexif
@@ -51,6 +52,7 @@ GENERATOR_URL = "https://flatai.org/ai-image-generator-free-no-signup/"
 LOGIN_URL = "https://flatai.org/login/"
 DEFAULT_CONFIG = "config.json"
 IMAGE_SUFFIX = ".jpg"
+GENERATED_IMAGE_SELECTOR = "img.generated-image"
 
 # TODO update to sync with the server options
 ASPECT_RATIOS = ("1:1", "16:9", "4:3", "9:16", "3:4")
@@ -545,6 +547,78 @@ def add_exif(path: Path, params: dict):
             im.save(path, exif=exif_bytes)
 
 
+# import base64
+# import os
+# import tempfile
+# from pathlib import Path
+
+# from selenium import webdriver
+# from selenium.webdriver.firefox.webdriver import WebDriver
+
+
+# Source - https://stackoverflow.com/a/79810715
+# Posted by edcsnt, modified by community. See post 'Timeline' for change history
+# Retrieved 2026-10-21, License - CC BY-SA 4.0
+async def fetch_blob(driver: "WebDriver", url: str) -> str | bytes:
+    """Fetch binary or plain-text blob from web browser.
+
+    :param driver: An instance of
+        ``selenium.webdriver.firefox.webdriver.WebDriver()``
+    :type driver: WebDriver
+    :param url: URL of blob to fetch
+    :type url: str
+    :raises ValueError: A URL with an invalid scheme was passed
+    :return: Binary or plain-text blob as bytes or string, respectively
+    """
+    script = """
+        const url = arguments[0];
+        const callback = arguments[arguments.length - 1];
+
+        fetch(url).then(res => { return res.bytes(); }).then(
+          B => { return B.toBase64(); },
+        ).then(callback);
+    """
+    text_chars = bytes(
+        {7, 8, 9, 10, 12, 13, 27} | set(range(0x20, 0x100)) - {0x7F}
+    )
+
+    if not url.startswith('blob:https:'):
+        m = "URL must start with 'blob:https:'"
+        raise ValueError(m)
+
+    e = await driver.execute_async_script(script, url)
+
+    f = base64.b64decode(e)
+
+    if f.translate(None, text_chars):
+        return f
+
+    return f.decode()
+
+
+async def clear_generated_image(driver, generated_image):
+    """
+    clear the image source
+    so the next wait_for_generated_image
+    does not return the previous generated image
+    """
+    if 1:
+        # debug
+        print("clearing the generated image ...")
+        await asyncio.sleep(1)
+    # await generated_image.set_attribute("src", "")
+    arguments = [
+        GENERATED_IMAGE_SELECTOR, # arguments[0]
+    ]
+    script = r"""
+        const GENERATED_IMAGE_SELECTOR = arguments[0];
+        for (const generated_image of document.querySelectorAll(GENERATED_IMAGE_SELECTOR)) {
+            generated_image.setAttribute("src", "");
+        }
+    """
+    await driver.execute_script(script, arguments)
+
+
 async def wait_for_generated_image(driver, timeout: float):
     """
     Wait until Flat AI's generated image data URL has finished loading.
@@ -553,66 +627,122 @@ async def wait_for_generated_image(driver, timeout: float):
     """
     deadline = time.monotonic() + timeout
 
+    step_idx = -1
     while time.monotonic() < deadline:
+        step_idx += 1
+        if 0:
+            # debug
+            print(f"wait_for_generated_image: step {step_idx + 1}")
         try:
-            raw = await driver.execute_script(
+            arguments = [
+                GENERATED_IMAGE_SELECTOR, # arguments[0]
+            ]
+            js_image_json = await driver.execute_script(
                 """
-                const images = [...document.images];
+                const GENERATED_IMAGE_SELECTOR = arguments[0];
+                const images = document.querySelectorAll(GENERATED_IMAGE_SELECTOR);
+
+                const results = [];
+                let js_image = null;
 
                 for (const img of images) {
                     const src = img.currentSrc || img.src || "";
 
-                    if (
-                        src.startsWith("data:image/") &&
-                        img.complete &&
-                        img.naturalWidth > 0 &&
-                        img.naturalHeight > 0
-                    ) {
-                        return JSON.stringify({
+                    if (!img.complete) continue;
+                    if (img.naturalWidth <= 0) continue;
+                    if (img.naturalHeight <= 0) continue;
+
+                    if (src.startsWith("data:image/")) {
+                        js_image = {
                             srcLength: src.length,
                             width: img.naturalWidth,
                             height: img.naturalHeight
-                        });
+                        };
+                        break;
+                    }
+                    else if (src.startsWith("blob:https://flatai.org/")) {
+                        // example: blob:https://flatai.org/5a7879dd-8553-4a50-998f-ebe575191233
+                        js_image = {
+                            src: src,
+                            width: img.naturalWidth,
+                            height: img.naturalHeight
+                        };
+                        break;
                     }
                 }
 
-                return null;
-                """
+                if (!js_image) return null;
+
+                const js_image_json = JSON.stringify(js_image)
+                return js_image_json;
+                """,
+                arguments
             )
 
-            if raw:
-                result = json.loads(raw)
+            # print(f"js_image_json: {js_image_json}")
 
-                print(
-                    "    generated image ready: "
-                    f"{result['width']}x{result['height']}, "
-                    f"data URL length={result['srcLength']}"
+            if js_image_json:
+                js_image = json.loads(js_image_json)
+
+                print(f"js_image: {js_image}")
+
+                py_images = await driver.find_elements(
+                    By.CSS_SELECTOR,
+                    # "img",
+                    GENERATED_IMAGE_SELECTOR,
                 )
+                # print(f"py_images: {py_images}")
+
+                result_images = []
+
+                print(f"    found {len(js_image)} generated images:")
+
+                if "srcLength" in js_image:
+                    print(
+                        "      generated image ready: "
+                        f"{js_image['width']}x{js_image['height']}, "
+                        f"data URL length={js_image['srcLength']}"
+                    )
+                elif "src" in js_image:
+                    print(
+                        "      generated image ready: "
+                        f"{js_image['width']}x{js_image['height']}, "
+                        f"blob URL={js_image['src']}"
+                    )
 
                 # Find and return the actual element.
-                images = await driver.find_elements(
-                    By.CSS_SELECTOR,
-                    "img",
-                )
-
-                for img in images:
+                for img_idx, py_image in enumerate(py_images):
                     try:
-                        src = await img.get_attribute("src")
+                        src = await py_image.get_attribute("src")
+                        if not src: continue
+
+                        print(f"py_image[{img_idx}] = {py_image}")
+                        print(f"py_image[{img_idx}].src = {src[:1000]}")
 
                         if (
-                            src
+                            "srcLength" in js_image
                             and src.startswith("data:image/")
-                            and len(src) == result["srcLength"]
+                            and len(src) == js_image["srcLength"]
                         ):
-                            return img
+                            return py_image
+                        elif (
+                            "src" in js_image
+                            # and src.startswith("blob:https://flatai.org/")
+                            and src == js_image["src"]
+                        ):
+                            return py_image
 
                     except Exception:
                         pass
 
-        except Exception:
+        except Exception as exc:
+            raise # debug
             pass
 
-        await asyncio.sleep(0.25)
+        # await asyncio.sleep(0.25)
+        # each image takes about 60 seconds to generate
+        # so we can wait a bit longer here
+        await asyncio.sleep(1)
 
     raise TimeoutError(
         "Generated image did not become available before timeout."
@@ -635,22 +765,32 @@ async def save_data_url_image(
         image,
         target: Path,
     ) -> Path:
-    data_url = await image.get_attribute("src")
+    image_src = await image.get_attribute("src")
 
-    if not data_url:
+    if not image_src:
         raise RuntimeError("Generated image has no src")
 
-    if not data_url.startswith("data:image/"):
+    if image_src.startswith("data:image/"):
+        try:
+            header, encoded = image_src.split(",", 1)
+        except ValueError as exc:
+            raise RuntimeError("Malformed image data URL") from exc
+
+        try:
+            data = base64.b64decode(encoded)
+        except binascii.Error:
+            # save_data_url_image: failed to decode encoded: %3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='640'%20height='360'%20viewBox='0%200%20640%20360'%3E%3C/svg%3E
+            print(f"save_data_url_image: failed to decode encoded: {encoded}")
+            await asyncio.sleep(999)
+            raise
+    elif image_src.startswith("blob:https://flatai.org/"):
+        # https://stackoverflow.com/questions/47424245/how-to-download-an-image-with-python-3-selenium-if-the-url-begins-with-blob
+        data = await fetch_blob(driver, image_src)
+
+    else:
         raise RuntimeError(
-            f"Expected data:image URL, got {data_url[:100]!r}"
+            f"Expected data:image URL or blob:https URL, got {image_src[:100]!r}"
         )
-
-    try:
-        header, encoded = data_url.split(",", 1)
-    except ValueError as exc:
-        raise RuntimeError("Malformed image data URL") from exc
-
-    data = base64.b64decode(encoded)
 
     target = unique_target(target)
     target.write_bytes(data)
@@ -774,6 +914,7 @@ async def one_generation(
     non_upscaled = (output_dir / seed).with_suffix(IMAGE_SUFFIX)
     non_upscaled = await save_data_url_image(driver, generated_image, non_upscaled)
     print(f"[11] Saved {non_upscaled}")
+    await clear_generated_image(driver, generated_image)
 
     # TODO? get seed from non_upscaled filename
     seed = await get_image_seed(driver)
@@ -796,6 +937,7 @@ async def one_generation(
         upscaled = (output_dir / seed).with_suffix(".upscaled" + IMAGE_SUFFIX)
         upscaled = await save_data_url_image(driver, generated_image, upscaled)
         print(f"[17] Saved {upscaled}")
+        await clear_generated_image(driver, generated_image)
 
         add_exif(upscaled, params)
         print("    EXIF metadata written")
