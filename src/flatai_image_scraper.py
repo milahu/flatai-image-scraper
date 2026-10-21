@@ -113,8 +113,19 @@ def parse_args() -> argparse.Namespace:
                     help=f"Credentials JSON file (default: {DEFAULT_CONFIG}).")
     p.add_argument("--aspect-ratio", choices=ASPECT_RATIOS, default="1:1",
                     help="Image aspect ratio (default: 1:1).")
-    p.add_argument("--style", choices=STYLES, default="Flat AI Ultra",
-                    help='Image style (default: "Flat AI Ultra").')
+    style_choices = list(STYLES) + list(MAGIC_STYLES)
+    p.add_argument("--style", choices=style_choices, default=DEFAULT_STYLE,
+                    help=(
+                        f'Image style'
+                        f' (default: "{DEFAULT_STYLE}")'
+                        f' (random: "{RANDOM_STYLE}")'
+                        f' (cycle: "{CYCLE_STYLE}")'
+                        '.'
+                    ))
+    # upscaling is disabled by default because
+    # 1. most generated images are trash
+    # 2. upscaling takes lots of time
+    # 3. good images can be upscaled later
     p.add_argument("--upscale", action="store_true",
                     help='Also request an upscaled version of all generated images.')
     p.add_argument("--output-root", default="output",
