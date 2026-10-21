@@ -56,6 +56,13 @@ IMAGE_SUFFIX = ".jpg"
 ASPECT_RATIOS = ("1:1", "16:9", "4:3", "9:16", "3:4")
 
 # TODO update to sync with the server options
+DEFAULT_STYLE = "Flat AI Ultra"
+CYCLE_STYLE = "(cycle)"
+RANDOM_STYLE = "(random)"
+MAGIC_STYLES = (
+    CYCLE_STYLE,
+    RANDOM_STYLE,
+)
 STYLES = (
     "Flat AI Ultra",
     "Flat AI Pro+",
@@ -130,11 +137,14 @@ def parse_args() -> argparse.Namespace:
     # 3. good images can be upscaled later
     p.add_argument("--upscale", action="store_true",
                     help='Also request an upscaled version of all generated images.')
+    # args.output_root
     p.add_argument("--output-root", default="output",
                     help="Output root directory (default: ./output).")
     p.add_argument("--timeout", type=float, default=180.0,
                     help="Generation/operation timeout in seconds (default: 180).")
-    return p.parse_args()
+    args = p.parse_args()
+    args.output_root = Path(args.output_root)
+    return args
 
 
 def load_credentials(args: argparse.Namespace) -> tuple[str, str]:
@@ -158,14 +168,14 @@ def load_credentials(args: argparse.Namespace) -> tuple[str, str]:
     return username, password
 
 
-def make_input_parameters(args: argparse.Namespace, username: str) -> dict:
+def make_input_parameters(args: argparse.Namespace, style: str, username: str) -> dict:
     # Credentials are input to the scraper, but the password is never persisted.
     return {
         "generator": GENERATOR_NAME,
         "generator_url": GENERATOR_URL,
         "prompt": args.prompt,
         "aspect_ratio": args.aspect_ratio,
-        "style": args.style,
+        "style": style,
         "username": username,
     }
 
@@ -177,10 +187,12 @@ def make_output_dir(root: str, params: dict) -> Path:
     digest = hashlib.sha1(canonical.encode("utf-8")).hexdigest()
     out = Path(root) / digest
     out.mkdir(parents=True, exist_ok=True)
-    (out / "prompt.json").write_text(
-        json.dumps(params, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    prompt_json_path = out / "prompt.json"
+    if not prompt_json_path.exists():
+        prompt_json_path.write_text(
+            json.dumps(params, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
     return out
 
 
@@ -701,6 +713,7 @@ async def upscale_current_image(driver, timeout: float):
 async def one_generation(
         driver,
         args,
+        style,
         output_dir: Path,
         params: dict,
         upscale: bool,
@@ -723,7 +736,7 @@ async def one_generation(
 
     # 6–7. Ratio and style.
     await set_aspect_ratio(driver, args.aspect_ratio, args.timeout)
-    await set_style(driver, args.style, args.timeout)
+    await set_style(driver, style, args.timeout)
 
     # 8. Generate.
     print("[8] Click Generate")
@@ -991,17 +1004,26 @@ async def main_async():
     args = parse_args()
     username, password = load_credentials(args)
 
-    params = make_input_parameters(args, username)
-    output_dir = make_output_dir(args.output_root, params)
     upscale = args.upscale
+    style = args.style
+    style_idx = -1
+    style_idx_max = len(STYLES) - 1
 
-    # A private download directory prevents unrelated Chrome downloads from
-    # being mistaken for generated images.
-    download_dir = output_dir / ".downloads"
-    download_dir.mkdir(parents=True, exist_ok=True)
+    # params = make_input_parameters(args, style, username)
+    # output_dir = make_output_dir(args.output_root, params)
+    #
+    # # A private download directory prevents unrelated Chrome downloads from
+    # # being mistaken for generated images.
+    # download_dir = output_dir / ".downloads"
+    # download_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Output directory: {output_dir}")
-    print(f"prompt.json:      {output_dir / 'prompt.json'}")
+    # output_dir can change for each request
+    # so we use the same download_dir for all requests
+    download_dir = args.output_root
+
+    # print(f"Output directory: {output_dir}")
+    # print(f"prompt.json:      {output_dir / 'prompt.json'}")
+    print(f"Download directory: {download_dir}")
     print(f"Aspect ratio:     {args.aspect_ratio}")
     print(f"Style:            {args.style}")
 
@@ -1029,10 +1051,28 @@ async def main_async():
 
         iteration = 1
         while True:
+
+            if args.style == RANDOM_STYLE:
+                style = random.choice(STYLES)
+                print(f"Style: {args.style!r} -> {style!r}")
+            elif args.style == CYCLE_STYLE:
+                style_idx += 1
+                if style_idx > style_idx_max:
+                    style_idx = 0
+                style = STYLES[style_idx]
+                print(f"Style: {args.style!r} -> {style!r}")
+
+            params = make_input_parameters(args, style, username)
+            output_dir = make_output_dir(args.output_root, params)
+
+            print(f"Output directory: {output_dir}")
+            print(f"prompt.json:      {output_dir / 'prompt.json'}")
+
             try:
                 await one_generation(
                     driver,
                     args,
+                    style,
                     output_dir,
                     params,
                     upscale,
