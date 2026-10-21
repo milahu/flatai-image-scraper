@@ -144,6 +144,8 @@ def parse_args() -> argparse.Namespace:
                     help="Output root directory (default: ./output).")
     p.add_argument("--timeout", type=float, default=180.0,
                     help="Generation/operation timeout in seconds (default: 180).")
+    p.add_argument("--headless", action="store_true",
+                    help='Run the web browser in headless mode.')
     args = p.parse_args()
     args.output_root = Path(args.output_root)
     return args
@@ -1181,8 +1183,9 @@ async def main_async():
 
     options = webdriver.ChromeOptions()
 
-    # Headful is the default: do NOT add --headless.
     options.add_argument("--start-maximized")
+    if args.headless:
+        options.add_argument("--headless")
     options.update_pref("download.prompt_for_download", False)
     options.update_pref("download.directory_upgrade", True)
     options.update_pref("download.default_directory", str(download_dir.resolve()))
