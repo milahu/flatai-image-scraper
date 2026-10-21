@@ -52,8 +52,10 @@ LOGIN_URL = "https://flatai.org/login/"
 DEFAULT_CONFIG = "config.json"
 IMAGE_SUFFIX = ".jpg"
 
+# TODO update to sync with the server options
 ASPECT_RATIOS = ("1:1", "16:9", "4:3", "9:16", "3:4")
 
+# TODO update to sync with the server options
 STYLES = (
     "Flat AI Ultra",
     "Flat AI Pro+",
