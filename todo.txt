@@ -1,0 +1,33 @@
+killing the scraper should also close the web browser
+
+
+
+the "style" CLI parameter should accept multiple values
+and the scraper should cycle these values
+note: multiple cycles should be orthogonal
+
+
+
+python gui app for selecting/rating images
+
+based on pyside6 qt bindings
+
+rate: yes/no/maybe
+rate=maybe means "let me decide later"
+
+also let the user add/remove tags, using previously used tags as suggestions
+the tags will be used later for upload to deviantart.com
+
+
+
+python cli app to upload images to deviantart.com
+
+the uploader should get an upscaled version from FlatAI
+and upload the upscaled version
+
+the uploader should maintain a database of uploaded images
+for each image it should store
+image path and hashes (MD5, SHA1, SHA256)
+upscaled image path and hashes (MD5, SHA1, SHA256)
+uploaded image URL
+image generation parameters (prompt, style, aspect ratio, seed)
