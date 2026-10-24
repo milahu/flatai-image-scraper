@@ -1443,6 +1443,15 @@ async def main_async():
             if not privacy_notice_popup_is_closed:
                 privacy_notice_popup_is_closed = await close_privacy_notice_popup(driver, args.timeout)
 
+            # give the user some time to kill the scaper
+            # before it requests the next image
+            # sleep_before_request = 0
+            sleep_before_request = 5
+
+            if sleep_before_request:
+                print(f"waiting {sleep_before_request} seconds before generating image. hit Ctrl+C to stop the scraper")
+                await asyncio.sleep(sleep_before_request)
+
             if args.style == RANDOM_STYLE:
                 style = random.choice(STYLES)
                 print(f"Style: {args.style!r} -> {style!r}")
