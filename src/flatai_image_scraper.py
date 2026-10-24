@@ -510,7 +510,8 @@ async def consent_cookies(driver, timeout: float):
         submit = await wait_for_element(
             driver,
             [(By.CSS_SELECTOR, CONSENT_COOKIES_SELECTOR)],
-            timeout,
+            # timeout,
+            10.0,
         )
     except TimeoutError as exc:
         print("    Getting the 'consent cookies' button failed -> Giving up")
