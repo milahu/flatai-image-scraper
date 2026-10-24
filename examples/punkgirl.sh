@@ -35,5 +35,7 @@ style="(cycle)"
 # aspect=1:1
 aspect=9:16
 
+set -x # enable xtrace
+
 # NOTE maybe add "--headless"
-exec ./src/flatai_image_scraper.py "$prompt" --style "$style" --aspect "$aspect"
+exec ./src/flatai_image_scraper.py "$prompt" --aspect "$aspect" --style "$style"
