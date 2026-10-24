@@ -9,6 +9,7 @@ mkShell {
       nur.repos.milahu.python3.pkgs.cdp-socket
       pillow
       piexif
+      pyside6
     ]))
   ];
 }
