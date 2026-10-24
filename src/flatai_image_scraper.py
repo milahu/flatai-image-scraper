@@ -40,6 +40,8 @@ from pathlib import Path
 import piexif
 from PIL import Image
 
+import selenium_driverless
+import selenium_driverless.types
 from selenium_driverless import webdriver
 from selenium_driverless.types.by import By
 
@@ -522,6 +524,86 @@ async def consent_cookies(driver, timeout: float):
     print("    Clicking 'consent cookies' ...")
     await submit.click()
     print("    Clicking 'consent cookies' done")
+
+
+async def close_privacy_notice_popup(driver, timeout: float):
+    r'''
+    we have to close this popup, otherwise the website is not usable:
+
+    How your data is used
+
+    Your privacy preferences are important.
+    That's why, based on legitimate interest,
+    we and our partners process and share
+    only limited data
+    such as your device type and content interactions
+    for advertising, research and service development purposes.
+
+    View partner list and manage privacy settings.
+    '''
+
+    # <body>
+    #   <div>
+    #     (shadow root)
+    #       <toolbar id="ft-floating-toolbar"
+    #         <div id="ft-reg-bubble"
+    #           <button class="ft-reg-bubble-close ft-styless-button"
+
+    CLOSE_PRIVACY_NOTICE_POPUP_SHADOW_ROOT_SELECTOR = "body > div"
+
+    # CLOSE_PRIVACY_NOTICE_POPUP_BUTTON_SELECTOR = "toolbar#ft-floating-toolbar button.ft-reg-bubble-close"
+    CLOSE_PRIVACY_NOTICE_POPUP_BUTTON_SELECTOR = "div#ft-reg-bubble button.ft-reg-bubble-close"
+
+    print(f"    Closing the 'privacy notice' popup ...")
+
+    script = f'''
+        var divs = Array.from(document.querySelectorAll({CLOSE_PRIVACY_NOTICE_POPUP_SHADOW_ROOT_SELECTOR!r})).filter(div => div.shadowRoot);
+        // var divs = []; // test: div was not found
+        var div = divs[0];
+        var button = div.shadowRoot.querySelector({CLOSE_PRIVACY_NOTICE_POPUP_BUTTON_SELECTOR!r});
+        // var button = null; // test: button was not found
+        button.click();
+    '''
+
+    try:
+        await driver.execute_script(script)
+    except selenium_driverless.types.JSEvalException as exc:
+        print(f"    Closing the 'privacy notice' popup failed: {type(exc).__name__}: {exc}")
+        return False # error
+
+    return True # success
+
+    r'''
+    # TODO use https://github.com/webdriverio/query-selector-shadow-dom
+    # to select elements hidden in shadow roots
+
+    # NOTE toolbar#ft-floating-toolbar (and div#ft-reg-bubble)
+    # are inside a shadow-root under "body > div"
+    # so we need the CSS combinator "/deep/" to select the button element
+    CLOSE_PRIVACY_NOTICE_POPUP_BUTTON_SELECTOR = "body > div /deep/ div#ft-reg-bubble button.ft-reg-bubble-close"
+
+    button_name = "close privacy popup"
+
+    print(f"    Getting the {button_name!r} button ...")
+    try:
+        button = await wait_for_element(
+            driver,
+            [(By.CSS_SELECTOR, CLOSE_PRIVACY_NOTICE_POPUP_BUTTON_SELECTOR)],
+            # timeout,
+            10.0,
+        )
+    except TimeoutError as exc:
+        print(f"    Getting the {button_name!r} button failed -> Giving up")
+        if 1:
+            await asyncio.sleep(999) # debug
+        # maybe the website is not asking to 'consent cookies'
+        return
+    print(f"    Getting the {button_name!r} button done")
+
+    print(f"    Clicking the {button_name!r} button ...")
+    await button.click()
+    print(f"    Clicking the {button_name!r} button done")
+    '''
 
 
 async def select_dropdown_text(driver, label: str, value: str, timeout: float):
@@ -1320,11 +1402,15 @@ async def main_async():
     # Allow repeated automatic downloads.
     options.update_pref("profile.default_content_setting_values.automatic_downloads", 1)
 
+    privacy_notice_popup_is_closed = False
+
     print("Starting visible Chromium...")
     async with webdriver.Chrome(options=options) as driver:
         await login(driver, username, password, args.timeout)
 
         await consent_cookies(driver, args.timeout)
+
+        # TODO close more popups that prevent us from using the website
 
         print("[4] Open Image Studio")
         await driver.get(GENERATOR_URL, wait_load=True, timeout=args.timeout)
@@ -1351,6 +1437,11 @@ async def main_async():
 
         iteration = 1
         while True:
+
+            # this popup can appear only after our first request
+            # so we keep trying to close it
+            if not privacy_notice_popup_is_closed:
+                privacy_notice_popup_is_closed = await close_privacy_notice_popup(driver, args.timeout)
 
             if args.style == RANDOM_STYLE:
                 style = random.choice(STYLES)
