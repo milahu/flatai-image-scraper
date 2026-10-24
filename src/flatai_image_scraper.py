@@ -477,6 +477,52 @@ async def login(driver, username: str, password_value: str, timeout: float):
     )
 
 
+async def consent_cookies(driver, timeout: float):
+    r'''
+    flatai.org asks for your consent to use your personal data to:
+
+    1. Personalised advertising
+    and content, advertising and content measurement,
+    audience research and services development
+    2. Store and/or access information on a device
+
+    Your personal data will be processed and information from your device
+    (cookies, unique identifiers, and other device data)
+    may be stored by, accessed by and shared with 210 partners,
+    or used specifically by this site.
+    We and our partners may use precise geolocation data.
+
+    Some vendors may process your personal data
+    on the basis of legitimate interest,
+    which you can object to by managing your options below.
+    Look for a link at the bottom of this page or in the site menu
+    to manage or withdraw consent in privacy and cookie settings.
+
+    Consent
+    '''
+    # ...otherwise the website is not usable
+    CONSENT_COOKIES_SELECTOR = "button.fc-cta-consent"
+    # <button class="fc-button fc-cta-consent fc-primary-button" role="button" aria-label="Consent" tabindex="0">
+
+    # Use the actual form's submit button.
+    print("    Getting the 'consent cookies' button ...")
+    try:
+        submit = await wait_for_element(
+            driver,
+            [(By.CSS_SELECTOR, CONSENT_COOKIES_SELECTOR)],
+            timeout,
+        )
+    except TimeoutError as exc:
+        print("    Getting the 'consent cookies' button failed -> Giving up")
+        # maybe the website is not asking to 'consent cookies'
+        return
+    print("    Getting the 'consent cookies' button done")
+
+    print("    Clicking 'consent cookies' ...")
+    await submit.click()
+    print("    Clicking 'consent cookies' done")
+
+
 async def select_dropdown_text(driver, label: str, value: str, timeout: float):
     """
     Click a control whose nearby text/aria-label/title identifies it, then
@@ -1277,6 +1323,8 @@ async def main_async():
     async with webdriver.Chrome(options=options) as driver:
         await login(driver, username, password, args.timeout)
 
+        await consent_cookies(driver, args.timeout)
+
         print("[4] Open Image Studio")
         await driver.get(GENERATOR_URL, wait_load=True, timeout=args.timeout)
 
@@ -1297,6 +1345,8 @@ async def main_async():
             # validate args.style
             if args.style not in STYLES:
                 raise ValueError(f"invalid style. args.style={args.style!r} is not in STYLES={STYLES}")
+
+        timeout_iterations = []
 
         iteration = 1
         while True:
@@ -1337,6 +1387,13 @@ async def main_async():
             except KeyboardInterrupt:
                 print("\nStopping.")
                 break
+
+            except TimeoutError as exc:
+                print(f"    Timeout waiting for generated image {iteration} -> Generating next image")
+                timeout_iterations.append(iteration)
+                print(f"    Timeout iterations: {timeout_iterations}")
+                iteration += 1
+
             except Exception as exc:
                 print(f"\nGeneration {iteration} failed: {exc!r}", file=sys.stderr)
                 # print("The browser remains open. Retrying after 5 seconds...", file=sys.stderr)
