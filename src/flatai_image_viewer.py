@@ -46,6 +46,8 @@ IMAGE_EXTENSIONS = {
     ".tif", ".tiff", ".webp",
 }
 
+UPSCALED_IMAGE_EXTENSION = ".upscaled.png"
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -136,6 +138,8 @@ def collect_images(
     items: list[ImageItem] = []
     for path in input_dir.rglob("*"):
         if not path.is_file() or path.suffix.casefold() not in IMAGE_EXTENSIONS:
+            continue
+        if str(path).endswith(UPSCALED_IMAGE_EXTENSION):
             continue
         resolved = path.resolve()
         # Avoid accidentally re-ingesting destinations if they are inside input_dir.
