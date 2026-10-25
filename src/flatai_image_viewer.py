@@ -42,8 +42,21 @@ from PySide6.QtWidgets import (
 )
 
 IMAGE_EXTENSIONS = {
-    ".avif", ".bmp", ".gif", ".heic", ".jpeg", ".jpg", ".png",
-    ".tif", ".tiff", ".webp",
+    ".avif",
+    ".bmp",
+    ".gif",
+    ".heic",
+    ".jpeg",
+    ".jpg",
+    ".png",
+    ".tif",
+    ".tiff",
+    ".webp",
+}
+
+# only view non-upscaled jpg images
+IMAGE_EXTENSIONS = {
+    ".jpg",
 }
 
 UPSCALED_IMAGE_EXTENSION = ".upscaled.png"
