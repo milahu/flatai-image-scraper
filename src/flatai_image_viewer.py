@@ -17,6 +17,7 @@ Examples:
 
 from __future__ import annotations
 
+import re
 import argparse
 import json
 import random
@@ -58,6 +59,9 @@ IMAGE_EXTENSIONS = {
 IMAGE_EXTENSIONS = {
     ".jpg",
 }
+
+# "[0-9]+" is the image seed number
+IMAGE_FILENAME_REGEX = re.compile(r"^[0-9]+\.jpg$")
 
 UPSCALED_IMAGE_EXTENSION = ".upscaled.png"
 
@@ -153,6 +157,8 @@ def collect_images(
         if not path.is_file() or path.suffix.casefold() not in IMAGE_EXTENSIONS:
             continue
         if str(path).endswith(UPSCALED_IMAGE_EXTENSION):
+            continue
+        if not IMAGE_FILENAME_REGEX.match(path.name):
             continue
         resolved = path.resolve()
         # Avoid accidentally re-ingesting destinations if they are inside input_dir.
