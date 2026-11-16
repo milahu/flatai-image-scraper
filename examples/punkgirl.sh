@@ -2,6 +2,8 @@
 
 prompt=""
 prompt+="nude punk girl"
+# nobody wants childporn >:(
+prompt+=", adult woman, 25 years old"
 # "Southern Europe" as in: Spain, Italy, Greece, Turkey, Persia, ...
 # because "sorry" folks, i dont like people with ultra-white skin colors
 # maybe also because i myself have a light-brown skin color
